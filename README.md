@@ -18,6 +18,12 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 github-rust = "0.1"
+```
+
+This library uses async/await. You'll need an async runtime to execute the code. Examples use [Tokio](https://tokio.rs/):
+
+```toml
+[dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
