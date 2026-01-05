@@ -1,0 +1,21 @@
+# Build artifacts
+/target/
+
+# Cargo lock file (optional for libraries, but useful to keep for reproducible builds)
+# Uncomment if you prefer not to track it:
+# Cargo.lock
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

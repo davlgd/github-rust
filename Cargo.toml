@@ -1,0 +1,40 @@
+[package]
+name = "github-rust"
+description = "Rust library for GitHub API integration with GraphQL/REST support"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["davlgd"]
+rust-version = "1.92"
+
+repository = "https://github.com/davlgd/github-rust"
+homepage = "https://github.com/davlgd/github-rust"
+documentation = "https://docs.rs/github-rust"
+readme = "README.md"
+keywords = ["github", "api", "graphql", "trending", "rust"]
+categories = ["api-bindings", "web-programming::http-client", "development-tools"]
+include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "LICENSE*"]
+
+[dependencies]
+reqwest = { version = "0.13.1", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.148"
+base64 = "0.22.1"
+percent-encoding = "2.3.2"
+chrono = { version = "0.4.42", features = ["serde"] }
+tracing = "0.1.44"
+secrecy = "0.10.3"
+
+[dev-dependencies]
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
+tokio-test = "0.4.5"
+wiremock = "0.6.5"
+tempfile = "3.24.0"
+
+# Production-optimized release profile for maximum performance and minimal binary size
+[profile.release]
+opt-level = "z"         # Optimize for size while maintaining good performance
+lto = true              # Link Time Optimization for cross-crate optimizations
+codegen-units = 1       # Single codegen unit for maximum optimization
+panic = "abort"         # Abort on panic - reduces binary size
+strip = true            # Strip debug symbols from release binary
