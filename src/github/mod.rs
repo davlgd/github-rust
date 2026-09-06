@@ -1,6 +1,8 @@
+pub mod accounts;
 pub mod client;
 pub mod graphql;
 pub mod models;
+mod pagination;
 mod response;
 pub mod rest;
 pub mod search;
@@ -13,3 +15,6 @@ pub use rest::UserProfile;
 pub use search::{SearchRepository, search_repositories};
 pub use service::{FallbackPolicy, GitHubService};
 pub use types::*;
+
+pub use accounts::{Account, OwnedRepositories, RepositoryPage, RepositorySummary, Viewer};
+pub use pagination::FetchOptions;

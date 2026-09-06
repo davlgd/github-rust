@@ -1,3 +1,5 @@
+#[path = "cases/accounts.rs"]
+mod accounts;
 #[path = "cases/errors.rs"]
 mod errors;
 #[path = "cases/fallback.rs"]

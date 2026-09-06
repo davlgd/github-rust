@@ -1,0 +1,9 @@
+query Viewer($first: Int!, $cursor: String) {
+  viewer {
+    id login name avatarUrl
+    organizations(first: $first, after: $cursor) {
+      totalCount nodes { id login name avatarUrl }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
