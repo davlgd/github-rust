@@ -1,0 +1,23 @@
+query OwnedRepositories($login: String!, $first: Int!, $cursor: String) {
+  repositoryOwner(login: $login) {
+    id login avatarUrl
+    ... on User {
+      name
+      repositories(first: $first, after: $cursor, ownerAffiliations: [OWNER], orderBy: {field: CREATED_AT, direction: ASC}) { ...OwnedRepositoryPage }
+    }
+    ... on Organization {
+      name
+      repositories(first: $first, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) { ...OwnedRepositoryPage }
+    }
+  }
+}
+fragment OwnedRepositoryPage on RepositoryConnection {
+  totalCount pageInfo { hasNextPage endCursor }
+  nodes {
+    id name nameWithOwner description url isPrivate isFork isArchived
+    stargazerCount forkCount pushedAt updatedAt
+    primaryLanguage { name color }
+    issues(states: OPEN) { totalCount }
+    pullRequests(states: OPEN) { totalCount }
+  }
+}

@@ -36,10 +36,12 @@ pub mod error;
 pub mod github;
 
 pub use config::{GITHUB_API_URL, GITHUB_GRAPHQL_URL};
-pub use error::{DecodeError, GitHubError, RateLimitDetails, Result};
+pub use error::{DecodeError, ErrorKind, GitHubError, RateLimitDetails, Result};
 pub use github::{
-    FallbackPolicy, GitHubClient, GitHubClientBuilder, GitHubService, LanguageUsage, RateLimit,
-    RateLimits, Repository, SearchRepository, StargazerWithDate, User, UserProfile,
+    Account, Actor, FallbackPolicy, FetchOptions, GitHubClient, GitHubClientBuilder, GitHubService,
+    Issue, Label, LanguageUsage, OwnedRepositories, PullRequest, RateLimit, RateLimits, Repository,
+    RepositoryCoordinates, RepositoryPage, RepositoryReference, RepositorySummary, ReviewDecision,
+    SearchRepository, StargazerWithDate, User, UserProfile, Viewer, WorkItemPage,
 };
 
 use base64::Engine;

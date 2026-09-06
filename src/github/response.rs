@@ -57,7 +57,7 @@ pub(crate) async fn check(response: Response) -> Result<Response> {
 pub(crate) async fn graphql<T: DeserializeOwned>(response: Response) -> Result<T> {
     let response = check(response).await?;
     let mut rate = rate_details(response.status().as_u16(), response.headers());
-    let response: GraphQLResponse<T> = response.json().await?;
+    let response: GraphQLResponse<serde_json::Value> = response.json().await?;
     let errors = response.errors.unwrap_or_default();
     if !errors.is_empty() {
         if errors
@@ -75,7 +75,8 @@ pub(crate) async fn graphql<T: DeserializeOwned>(response: Response) -> Result<T
         }
         return Err(GitHubError::GraphQLError(errors));
     }
-    response
+    let data = response
         .data
-        .ok_or_else(|| GitHubError::ParseError("No data in GraphQL response".into()))
+        .ok_or_else(|| GitHubError::ParseError("No data in GraphQL response".into()))?;
+    Ok(serde_json::from_value(data)?)
 }

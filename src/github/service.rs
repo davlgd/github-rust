@@ -47,6 +47,7 @@ pub struct GitHubService {
     /// The underlying HTTP client with connection pooling.
     pub client: GitHubClient,
     fallback_policy: FallbackPolicy,
+    pub(crate) fetch_options: super::FetchOptions,
 }
 
 impl GitHubService {
@@ -81,6 +82,7 @@ impl GitHubService {
         Self {
             client,
             fallback_policy: FallbackPolicy::default(),
+            fetch_options: super::FetchOptions::default(),
         }
     }
 
@@ -370,6 +372,143 @@ impl GitHubService {
         page: Option<u32>,
     ) -> Result<Vec<crate::github::types::StargazerWithDate>> {
         rest::get_repository_stargazers(&self.client, owner, name, per_page, page).await
+    }
+}
+
+impl GitHubService {
+    /// Configure limits for account, owned-repository and open-work-item collections.
+    pub fn with_fetch_options(mut self, options: super::FetchOptions) -> Result<Self> {
+        self.fetch_options = options.validate()?;
+        Ok(self)
+    }
+
+    /// Fetch the authenticated account and all organizations visible to its token.
+    pub async fn get_viewer(&self) -> Result<super::Viewer> {
+        super::accounts::viewer(&self.client, self.fetch_options).await
+    }
+
+    /// List repositories owned by a user or organization, including visible private,
+    /// forked and archived repositories. Results are sorted by full name.
+    pub async fn get_owned_repositories(&self, login: &str) -> Result<super::OwnedRepositories> {
+        super::accounts::repositories(
+            &self.client,
+            login,
+            self.fetch_options,
+            None::<super::pagination::NoProgress<_>>,
+        )
+        .await
+    }
+
+    /// List owned repositories, lending each validated page to an asynchronous callback.
+    /// Use `async |page| { ...; Ok(()) }` to borrow the page across await points.
+    /// Pages are provisional until this method succeeds. A callback error or dropping
+    /// the returned future cancels traversal; no background tasks are spawned.
+    /// GitHub does not provide a transactional snapshot across pages.
+    pub async fn get_owned_repositories_with_progress<F>(
+        &self,
+        login: &str,
+        progress: F,
+    ) -> Result<super::OwnedRepositories>
+    where
+        F: AsyncFnMut(&super::RepositoryPage) -> Result<()>,
+    {
+        super::accounts::repositories(&self.client, login, self.fetch_options, Some(progress)).await
+    }
+}
+
+impl GitHubService {
+    /// Fetch every open work item in one repository, sorted by update time descending.
+    pub async fn get_open_issues(&self, owner: &str, name: &str) -> Result<Vec<super::Issue>> {
+        self.get_open_issues_for_repositories(&[super::RepositoryCoordinates::new(owner, name)?])
+            .await
+    }
+    /// Fetch open work items in explicit repository scopes without rediscovering ownership.
+    /// Archived repositories are included if supplied; applications choose their scopes.
+    pub async fn get_open_issues_for_repositories(
+        &self,
+        repositories: &[super::RepositoryCoordinates],
+    ) -> Result<Vec<super::Issue>> {
+        super::work_items::collect(
+            &self.client,
+            repositories,
+            self.fetch_options,
+            None::<super::pagination::NoProgress<_>>,
+        )
+        .await
+    }
+    /// Traverse repository scopes with bounded concurrency and lend each page to an async callback.
+    /// Empty scopes return immediately without authentication or a callback.
+    /// Use `async |page| { ...; Ok(()) }` to borrow the page across await points.
+    /// Pages are provisional until the whole call succeeds. Callback errors and dropping
+    /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
+    /// their embedded 100-node pages, otherwise this returns a pagination error.
+    /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
+    pub async fn get_open_issues_with_progress<F>(
+        &self,
+        repositories: &[super::RepositoryCoordinates],
+        progress: F,
+    ) -> Result<Vec<super::Issue>>
+    where
+        F: AsyncFnMut(&super::WorkItemPage<super::Issue>) -> Result<()>,
+    {
+        super::work_items::collect(
+            &self.client,
+            repositories,
+            self.fetch_options,
+            Some(progress),
+        )
+        .await
+    }
+}
+
+impl GitHubService {
+    /// Fetch every open work item in one repository, sorted by update time descending.
+    pub async fn get_open_pull_requests(
+        &self,
+        owner: &str,
+        name: &str,
+    ) -> Result<Vec<super::PullRequest>> {
+        self.get_open_pull_requests_for_repositories(&[super::RepositoryCoordinates::new(
+            owner, name,
+        )?])
+        .await
+    }
+    /// Fetch open work items in explicit repository scopes without rediscovering ownership.
+    /// Archived repositories are included if supplied; applications choose their scopes.
+    pub async fn get_open_pull_requests_for_repositories(
+        &self,
+        repositories: &[super::RepositoryCoordinates],
+    ) -> Result<Vec<super::PullRequest>> {
+        super::work_items::collect(
+            &self.client,
+            repositories,
+            self.fetch_options,
+            None::<super::pagination::NoProgress<_>>,
+        )
+        .await
+    }
+    /// Traverse repository scopes with bounded concurrency and lend each page to an async callback.
+    /// Empty scopes return immediately without authentication or a callback.
+    /// Use `async |page| { ...; Ok(()) }` to borrow the page across await points.
+    /// Pages are provisional until the whole call succeeds. Callback errors and dropping
+    /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
+    /// their embedded 100-node pages, otherwise this returns a pagination error.
+    /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
+    pub async fn get_open_pull_requests_with_progress<F>(
+        &self,
+        repositories: &[super::RepositoryCoordinates],
+        progress: F,
+    ) -> Result<Vec<super::PullRequest>>
+    where
+        F: AsyncFnMut(&super::WorkItemPage<super::PullRequest>) -> Result<()>,
+    {
+        super::work_items::collect(
+            &self.client,
+            repositories,
+            self.fetch_options,
+            Some(progress),
+        )
+        .await
     }
 }
 

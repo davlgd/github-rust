@@ -1,7 +1,7 @@
 [package]
 name = "github-rust"
 description = "Rust library for GitHub API integration with GraphQL/REST support"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["davlgd"]
@@ -13,20 +13,21 @@ documentation = "https://docs.rs/github-rust"
 readme = "README.md"
 keywords = ["github", "api", "graphql", "trending", "rust"]
 categories = ["api-bindings", "web-programming::http-client", "development-tools"]
-include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "MIGRATING.md", "CHANGELOG.md", "LICENSE*"]
+include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE*"]
 
 [dependencies]
-reqwest = { version = "0.13.1", features = ["json"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
-base64 = "0.22.1"
+reqwest = { version = "0.13.4", features = ["json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+base64 = "0.23.1"
 percent-encoding = "2.3.2"
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 tracing = "0.1.44"
 secrecy = "0.10.3"
+futures-util = "0.3.34"
 
 [dev-dependencies]
-tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6.5"
 
 # Production-optimized release profile for maximum performance and minimal binary size

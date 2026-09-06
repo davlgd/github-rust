@@ -1,0 +1,25 @@
+query OpenWorkItems($owner: String!, $name: String!, $first: Int!, $cursor: String, $issues: Boolean!) {
+  repository(owner: $owner, name: $name, followRenames: false) {
+    id name nameWithOwner isArchived
+    issues(first: $first, after: $cursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) @include(if: $issues) {
+      totalCount pageInfo { hasNextPage endCursor }
+      nodes {
+        id number title url createdAt updatedAt
+        author { login }
+        labels(first: 100) { totalCount nodes { name color } }
+        assignees(first: 100) { totalCount nodes { login } }
+        comments { totalCount }
+      }
+    }
+    pullRequests(first: $first, after: $cursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) @skip(if: $issues) {
+      totalCount pageInfo { hasNextPage endCursor }
+      nodes {
+        id number title url createdAt updatedAt isDraft reviewDecision
+        author { login }
+        labels(first: 100) { totalCount nodes { name color } }
+        assignees(first: 100) { totalCount nodes { login } }
+        comments { totalCount }
+      }
+    }
+  }
+}

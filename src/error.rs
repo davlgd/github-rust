@@ -61,6 +61,8 @@ impl Error for DecodeError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GitHubError {
+    /// A progress callback requested cancellation.
+    Cancelled,
     NetworkError(reqwest::Error),
     AuthenticationError(String),
     AccessDeniedError(String),
@@ -86,6 +88,7 @@ pub enum GitHubError {
 impl fmt::Display for GitHubError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => f.write_str("Operation cancelled"),
             Self::NetworkError(error) => write!(f, "Network error: {error}"),
             Self::AuthenticationError(message) => write!(f, "Authentication error: {message}"),
             Self::AccessDeniedError(message) => write!(f, "Access denied: {message}"),
@@ -151,6 +154,65 @@ impl GitHubError {
         match self {
             Self::NotFoundError(_) => Self::NotFoundError(format!("{owner}/{name}")),
             error => error,
+        }
+    }
+}
+
+/// Classification for application error handling without exposing upstream messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    Authentication,
+    Permission,
+    NotFound,
+    RateLimit,
+    Timeout,
+    Network,
+    InvalidInput,
+    Pagination,
+    Cancelled,
+    Upstream,
+}
+impl GitHubError {
+    /// Upstream error messages may contain sensitive details. Translate this category
+    /// into application-owned messages before returning errors to an untrusted client.
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::AuthenticationError(_) => ErrorKind::Authentication,
+            Self::AccessDeniedError(_)
+            | Self::AccessBlockedError(_)
+            | Self::DmcaBlockedError(_) => ErrorKind::Permission,
+            Self::NotFoundError(_) => ErrorKind::NotFound,
+            Self::RateLimitError(_) => ErrorKind::RateLimit,
+            Self::NetworkError(e) if e.is_timeout() => ErrorKind::Timeout,
+            Self::NetworkError(_) => ErrorKind::Network,
+            Self::InvalidInput(_) | Self::ConfigError(_) => ErrorKind::InvalidInput,
+            Self::PaginationError(_) => ErrorKind::Pagination,
+            Self::Cancelled => ErrorKind::Cancelled,
+            Self::FallbackError { rest, .. } => rest.kind(),
+            Self::GraphQLError(errors) => {
+                let has = |types: &[&str]| {
+                    errors
+                        .iter()
+                        .any(|e| e.error_type.as_deref().is_some_and(|t| types.contains(&t)))
+                };
+                if has(&["RATE_LIMITED"]) {
+                    ErrorKind::RateLimit
+                } else if has(&["UNAUTHORIZED", "UNAUTHENTICATED"]) {
+                    ErrorKind::Authentication
+                } else if has(&["FORBIDDEN", "INSUFFICIENT_SCOPES"]) {
+                    ErrorKind::Permission
+                } else if !errors.is_empty()
+                    && errors
+                        .iter()
+                        .all(|e| e.error_type.as_deref() == Some("NOT_FOUND"))
+                {
+                    ErrorKind::NotFound
+                } else {
+                    ErrorKind::Upstream
+                }
+            }
+            _ => ErrorKind::Upstream,
         }
     }
 }
