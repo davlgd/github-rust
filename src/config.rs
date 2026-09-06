@@ -27,7 +27,7 @@ query($owner: String!, $name: String!) {
     watchers {
       totalCount
     }
-    issues {
+    issues(states: OPEN) {
       totalCount
     }
     pullRequests {
@@ -40,7 +40,8 @@ query($owner: String!, $name: String!) {
       name
       color
     }
-    languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+    languages(first: 100, orderBy: {field: SIZE, direction: DESC}) {
+      pageInfo { hasNextPage }
       edges {
         size
         node {
@@ -56,7 +57,7 @@ query($owner: String!, $name: String!) {
     defaultBranchRef {
       name
     }
-    repositoryTopics(first: 20) {
+    repositoryTopics(first: 100) {
       edges {
         node {
           topic {
@@ -99,7 +100,7 @@ query($queryString: String!, $first: Int!, $after: String) {
             name
             spdxId
           }
-          repositoryTopics(first: 5) {
+          repositoryTopics(first: 100) {
             edges {
               node {
                 topic {

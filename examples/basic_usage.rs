@@ -33,7 +33,9 @@ async fn main() -> Result<()> {
     println!("Repository: {}", repo.name_with_owner);
     println!("  Stars: {}", repo.stargazer_count);
     println!("  Forks: {}", repo.fork_count);
-    println!("  Open Issues: {}", repo.open_issues());
+    if let Some(count) = repo.open_issues() {
+        println!("  Open Issues: {}", count);
+    }
 
     if let Some(lang) = repo.language() {
         println!("  Language: {}", lang);

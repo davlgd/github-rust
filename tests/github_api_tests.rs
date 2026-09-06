@@ -1,3 +1,7 @@
+#[path = "cases/repository.rs"]
+mod repository;
+mod support;
+
 use github_rust::{GitHubService, SearchRepository, StargazerWithDate, User};
 
 #[test]

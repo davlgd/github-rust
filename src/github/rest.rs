@@ -1,6 +1,6 @@
 use crate::error::*;
 use crate::github::client::GitHubClient;
-use crate::github::graphql::Repository as GraphQLRepository;
+use crate::github::models::Repository;
 use crate::github::types::*;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
@@ -27,8 +27,7 @@ struct RestRepository {
     archived: bool,
     stargazers_count: u32,
     forks_count: u32,
-    watchers_count: u32,
-    open_issues_count: u32,
+    subscribers_count: Option<u32>,
     language: Option<String>,
     license: Option<RestLicense>,
     default_branch: String,
@@ -57,7 +56,7 @@ pub async fn get_repository_info(
     client: &GitHubClient,
     owner: &str,
     name: &str,
-) -> Result<GraphQLRepository> {
+) -> Result<Repository> {
     let encoded_owner = encode_path_segment(owner);
     let encoded_name = encode_path_segment(name);
     let repo_url = format!(
@@ -119,15 +118,14 @@ pub async fn get_repository_info(
         encoded_name
     );
     let lang_response = client.get(&languages_url).send().await?;
-    let language_stats: LanguageStats = if lang_response.status().is_success() {
-        lang_response.json().await?
+    let language_stats: Option<LanguageStats> = if lang_response.status().is_success() {
+        Some(lang_response.json().await?)
     } else {
-        LanguageStats {
-            languages: std::collections::HashMap::new(),
-        }
+        tracing::debug!(status = %lang_response.status(), "Language breakdown unavailable");
+        None
     };
 
-    Ok(convert_rest_to_graphql(rest_repo, language_stats))
+    Ok(convert_rest_repository(rest_repo, language_stats))
 }
 
 pub async fn get_user_profile(client: &GitHubClient) -> Result<UserProfile> {
@@ -326,31 +324,25 @@ pub async fn get_repository_stargazers(
     Ok(stargazers)
 }
 
-fn convert_rest_to_graphql(rest: RestRepository, lang_stats: LanguageStats) -> GraphQLRepository {
-    let languages = LanguageConnection {
-        edges: lang_stats
+fn convert_rest_repository(rest: RestRepository, lang_stats: Option<LanguageStats>) -> Repository {
+    let languages_complete = lang_stats.is_some();
+    let languages = lang_stats.map(|stats| {
+        let mut languages: Vec<_> = stats
             .languages
             .into_iter()
-            .map(|(name, size)| LanguageEdge {
-                size,
-                node: Language { name, color: None },
+            .map(|(name, bytes)| crate::github::models::LanguageUsage {
+                language: Language { name, color: None },
+                bytes,
             })
-            .collect(),
-    };
-
-    let repository_topics = TopicConnection {
-        edges: rest
-            .topics
-            .into_iter()
-            .map(|topic_name| TopicEdge {
-                node: TopicNode {
-                    topic: Topic { name: topic_name },
-                },
-            })
-            .collect(),
-    };
-
-    GraphQLRepository {
+            .collect();
+        languages.sort_by(|a, b| {
+            b.bytes
+                .cmp(&a.bytes)
+                .then_with(|| a.language.name.cmp(&b.language.name))
+        });
+        languages
+    });
+    Repository {
         node_id: rest.node_id,
         database_id: Some(rest.id),
         name: rest.name,
@@ -366,24 +358,19 @@ fn convert_rest_to_graphql(rest: RestRepository, lang_stats: LanguageStats) -> G
         is_archived: rest.archived,
         stargazer_count: rest.stargazers_count,
         fork_count: rest.forks_count,
-        watchers: TotalCount {
-            total_count: rest.watchers_count,
-        },
-        issues: TotalCount {
-            total_count: rest.open_issues_count,
-        },
-        pull_requests: TotalCount { total_count: 0 },
-        releases: TotalCount { total_count: 0 },
+        watcher_count: rest.subscribers_count,
+        open_issue_count: None,
+        pull_request_count: None,
+        release_count: None,
         primary_language: rest.language.map(|name| Language { name, color: None }),
         languages,
+        languages_complete,
         license_info: rest.license.map(|l| License {
             name: l.name,
             spdx_id: l.spdx_id,
         }),
-        default_branch_ref: Some(Branch {
-            name: rest.default_branch,
-        }),
-        repository_topics,
+        default_branch: Some(rest.default_branch),
+        topics: rest.topics,
     }
 }
 

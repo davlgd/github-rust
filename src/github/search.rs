@@ -2,7 +2,7 @@ use crate::github::client::GitHubClient;
 use crate::github::types::*;
 use crate::{config::*, error::*};
 use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Validates and sanitizes a language parameter for GitHub search.
@@ -63,12 +63,14 @@ fn validate_language(language: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+pub use crate::github::models::SearchRepository;
+
 /// Repository data from GitHub search API.
 ///
 /// A lighter-weight repository struct returned by search operations,
 /// containing the most commonly needed fields.
-#[derive(Deserialize, Serialize, Clone, Default, Debug)]
-pub struct SearchRepository {
+#[derive(Deserialize)]
+struct GraphQLSearchRepository {
     /// Opaque global node ID, shared by the REST and GraphQL APIs.
     #[serde(rename = "id")]
     pub node_id: String,
@@ -110,44 +112,29 @@ pub struct SearchRepository {
     pub repository_topics: TopicConnection,
 }
 
-impl SearchRepository {
-    /// Returns the primary language name, or None if not set.
-    #[must_use]
-    pub fn language(&self) -> Option<&str> {
-        self.primary_language.as_ref().map(|l| l.name.as_str())
-    }
-
-    /// Returns the license name, or None if not set.
-    #[must_use]
-    pub fn license(&self) -> Option<&str> {
-        self.license_info.as_ref().map(|l| l.name.as_str())
-    }
-
-    /// Returns the SPDX license identifier, or None if not available.
-    #[must_use]
-    pub fn license_spdx(&self) -> Option<&str> {
-        self.license_info
-            .as_ref()
-            .and_then(|l| l.spdx_id.as_deref())
-    }
-
-    /// Returns a list of topic names.
-    #[must_use]
-    pub fn topics(&self) -> Vec<&str> {
-        self.repository_topics
-            .edges
-            .iter()
-            .map(|e| e.node.topic.name.as_str())
-            .collect()
-    }
-
-    /// Returns the owner part of name_with_owner.
-    #[must_use]
-    pub fn owner(&self) -> &str {
-        self.name_with_owner
-            .split('/')
-            .next()
-            .unwrap_or(&self.name_with_owner)
+impl From<GraphQLSearchRepository> for SearchRepository {
+    fn from(repo: GraphQLSearchRepository) -> Self {
+        Self {
+            node_id: repo.node_id,
+            database_id: repo.database_id,
+            name: repo.name,
+            name_with_owner: repo.name_with_owner,
+            description: repo.description,
+            url: repo.url,
+            stargazer_count: repo.stargazer_count,
+            fork_count: repo.fork_count,
+            created_at: repo.created_at,
+            updated_at: repo.updated_at,
+            pushed_at: repo.pushed_at,
+            primary_language: repo.primary_language,
+            license_info: repo.license_info,
+            topics: repo
+                .repository_topics
+                .edges
+                .into_iter()
+                .map(|edge| edge.node.topic.name)
+                .collect(),
+        }
     }
 }
 
@@ -176,7 +163,7 @@ struct SearchConnection {
 
 #[derive(Deserialize)]
 struct SearchEdge {
-    node: SearchRepository,
+    node: GraphQLSearchRepository,
 }
 
 /// Search for repositories created in the last N days with minimum stars.
@@ -287,7 +274,7 @@ pub async fn search_repositories(
                     .search
                     .edges
                     .into_iter()
-                    .map(|edge| edge.node)
+                    .map(|edge| edge.node.into())
                     .collect();
 
                 all_repositories.extend(page_repositories);
