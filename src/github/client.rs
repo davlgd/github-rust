@@ -1,5 +1,5 @@
 use crate::{config::*, error::*};
-use reqwest::{Client, header::HeaderMap};
+use reqwest::{Client, Url, header::HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
 use std::env;
 
@@ -10,6 +10,8 @@ use std::env;
 #[derive(Clone)]
 pub struct GitHubClient {
     client: Client,
+    rest_url: String,
+    graphql_url: String,
     /// Token stored securely - automatically zeroized on drop
     token: Option<SecretString>,
 }
@@ -22,45 +24,49 @@ impl GitHubClient {
     /// zeroized when the client is dropped.
     #[must_use = "Creating a client without using it is wasteful"]
     pub fn new() -> Result<Self> {
-        let token: Option<SecretString> = env::var("GITHUB_TOKEN").ok().map(SecretString::from);
-        let mut headers = HeaderMap::new();
-
-        headers.insert(
-            "User-Agent",
-            USER_AGENT
-                .parse()
-                .map_err(|_| GitHubError::ConfigError("Invalid User-Agent header".to_string()))?,
-        );
-        headers.insert(
-            "Accept",
-            "application/vnd.github+json"
-                .parse()
-                .map_err(|_| GitHubError::ConfigError("Invalid Accept header".to_string()))?,
-        );
-        headers.insert(
-            "X-GitHub-Api-Version",
-            "2022-11-28"
-                .parse()
-                .map_err(|_| GitHubError::ConfigError("Invalid API version header".to_string()))?,
-        );
-
-        if let Some(ref token) = token {
-            let auth_value = format!("Bearer {}", token.expose_secret());
-            headers.insert(
-                "Authorization",
-                auth_value.parse().map_err(|_| {
-                    GitHubError::ConfigError("Invalid Authorization header".to_string())
-                })?,
-            );
+        let mut builder = Self::builder();
+        if let Ok(token) = env::var("GITHUB_TOKEN") {
+            builder = builder.token(SecretString::from(token));
         }
+        builder.build()
+    }
 
-        let client = Client::builder()
-            .timeout(DEFAULT_TIMEOUT)
-            .default_headers(headers)
-            .build()
-            .map_err(|e| GitHubError::NetworkError(e.to_string()))?;
+    /// Creates a builder with no token; environment variables are not read.
+    pub fn builder() -> GitHubClientBuilder {
+        GitHubClientBuilder::default()
+    }
 
-        Ok(Self { client, token })
+    pub(crate) fn rest_url(&self) -> &str {
+        &self.rest_url
+    }
+
+    pub(crate) fn graphql_url(&self) -> &str {
+        &self.graphql_url
+    }
+
+    pub(crate) fn get(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::GET, url)
+    }
+
+    pub(crate) fn post(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::POST, url)
+    }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        url: impl reqwest::IntoUrl,
+    ) -> reqwest::RequestBuilder {
+        let request = self
+            .client
+            .request(method, url)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        match &self.token {
+            Some(token) => request.bearer_auth(token.expose_secret()),
+            None => request,
+        }
     }
 
     #[must_use]
@@ -68,6 +74,7 @@ impl GitHubClient {
         self.token.is_some()
     }
 
+    /// Raw HTTP transport. Library authentication headers are added only by API methods.
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
@@ -75,8 +82,7 @@ impl GitHubClient {
 
     pub async fn check_rate_limit(&self) -> Result<RateLimit> {
         let response = self
-            .client
-            .get(format!("{}/rate_limit", GITHUB_API_URL))
+            .get(format!("{}/rate_limit", self.rest_url()))
             .send()
             .await?;
 
@@ -112,6 +118,88 @@ impl GitHubClient {
             limit: rate["limit"].as_u64().unwrap_or(0),
             remaining: rate["remaining"].as_u64().unwrap_or(0),
             reset: rate["reset"].as_u64().unwrap_or(0),
+        })
+    }
+}
+
+/// Explicit configuration for authentication, endpoints and HTTP transport.
+///
+/// Custom endpoints receive the configured token. Only use endpoints you trust.
+/// An injected HTTP client controls timeouts, proxies and redirects.
+pub struct GitHubClientBuilder {
+    client: Option<Client>,
+    token: Option<SecretString>,
+    rest_url: String,
+    graphql_url: String,
+}
+
+impl Default for GitHubClientBuilder {
+    fn default() -> Self {
+        Self {
+            client: None,
+            token: None,
+            rest_url: GITHUB_API_URL.to_owned(),
+            graphql_url: GITHUB_GRAPHQL_URL.to_owned(),
+        }
+    }
+}
+
+impl GitHubClientBuilder {
+    pub fn token(mut self, token: SecretString) -> Self {
+        self.token = Some(token);
+        self
+    }
+
+    pub fn http_client(mut self, client: Client) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    pub fn rest_url(mut self, url: impl Into<String>) -> Self {
+        self.rest_url = url.into();
+        self
+    }
+
+    pub fn graphql_url(mut self, url: impl Into<String>) -> Self {
+        self.graphql_url = url.into();
+        self
+    }
+
+    pub fn build(self) -> Result<GitHubClient> {
+        for endpoint in [&self.rest_url, &self.graphql_url] {
+            let url = Url::parse(endpoint)
+                .map_err(|_| GitHubError::ConfigError("Invalid API endpoint URL".into()))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(GitHubError::ConfigError(
+                    "API endpoints must be HTTP(S) URLs without credentials, query or fragment"
+                        .into(),
+                ));
+            }
+        }
+        if let Some(token) = &self.token {
+            if token.expose_secret().trim().is_empty() {
+                return Err(GitHubError::ConfigError(
+                    "GitHub token cannot be empty".into(),
+                ));
+            }
+            HeaderValue::from_str(&format!("Bearer {}", token.expose_secret()))
+                .map_err(|_| GitHubError::ConfigError("Invalid Authorization header".into()))?;
+        }
+        let client = match self.client {
+            Some(client) => client,
+            None => Client::builder().timeout(DEFAULT_TIMEOUT).build()?,
+        };
+        Ok(GitHubClient {
+            client,
+            token: self.token,
+            rest_url: self.rest_url.trim_end_matches('/').to_owned(),
+            graphql_url: self.graphql_url,
         })
     }
 }

@@ -238,8 +238,7 @@ pub async fn search_repositories(
         };
 
         let response = client
-            .client()
-            .post(GITHUB_GRAPHQL_URL)
+            .post(client.graphql_url())
             .json(&graphql_query)
             .send()
             .await?;

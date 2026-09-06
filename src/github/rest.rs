@@ -1,7 +1,7 @@
+use crate::error::*;
 use crate::github::client::GitHubClient;
 use crate::github::graphql::Repository as GraphQLRepository;
 use crate::github::types::*;
-use crate::{config::*, error::*};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
 
@@ -61,10 +61,12 @@ pub async fn get_repository_info(
     let encoded_name = encode_path_segment(name);
     let repo_url = format!(
         "{}/repos/{}/{}",
-        GITHUB_API_URL, encoded_owner, encoded_name
+        client.rest_url(),
+        encoded_owner,
+        encoded_name
     );
 
-    let response = client.client().get(&repo_url).send().await?;
+    let response = client.get(&repo_url).send().await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -111,9 +113,11 @@ pub async fn get_repository_info(
 
     let languages_url = format!(
         "{}/repos/{}/{}/languages",
-        GITHUB_API_URL, encoded_owner, encoded_name
+        client.rest_url(),
+        encoded_owner,
+        encoded_name
     );
-    let lang_response = client.client().get(&languages_url).send().await?;
+    let lang_response = client.get(&languages_url).send().await?;
     let language_stats: LanguageStats = if lang_response.status().is_success() {
         lang_response.json().await?
     } else {
@@ -126,9 +130,9 @@ pub async fn get_repository_info(
 }
 
 pub async fn get_user_profile(client: &GitHubClient) -> Result<UserProfile> {
-    let user_url = format!("{}/user", GITHUB_API_URL);
+    let user_url = format!("{}/user", client.rest_url());
 
-    let response = client.client().get(&user_url).send().await?;
+    let response = client.get(&user_url).send().await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -191,10 +195,12 @@ pub async fn get_user_starred_repositories(client: &GitHubClient) -> Result<Vec<
         }
         let starred_url = format!(
             "{}/user/starred?per_page={}&page={}",
-            GITHUB_API_URL, per_page, page
+            client.rest_url(),
+            per_page,
+            page
         );
 
-        let response = client.client().get(&starred_url).send().await?;
+        let response = client.get(&starred_url).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -260,13 +266,19 @@ pub async fn get_repository_stargazers(
     let encoded_name = encode_path_segment(name);
     let stargazers_url = format!(
         "{}/repos/{}/{}/stargazers?per_page={}&page={}",
-        GITHUB_API_URL, encoded_owner, encoded_name, per_page, page
+        client.rest_url(),
+        encoded_owner,
+        encoded_name,
+        per_page,
+        page
     );
 
     let response = client
-        .client()
         .get(&stargazers_url)
-        .header("Accept", "application/vnd.github.v3.star+json")
+        .headers(reqwest::header::HeaderMap::from_iter([(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/vnd.github.v3.star+json"),
+        )]))
         .send()
         .await?;
 
@@ -436,7 +448,11 @@ mod tests {
 
         let expected_url = format!(
             "{}/repos/{}/{}/stargazers?per_page={}&page={}",
-            GITHUB_API_URL, owner, name, per_page, page
+            crate::config::GITHUB_API_URL,
+            owner,
+            name,
+            per_page,
+            page
         );
 
         assert!(expected_url.contains("microsoft/vscode/stargazers"));

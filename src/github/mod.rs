@@ -5,7 +5,7 @@ pub mod search;
 pub mod service;
 pub mod types;
 
-pub use client::{GitHubClient, RateLimit};
+pub use client::{GitHubClient, GitHubClientBuilder, RateLimit};
 pub use graphql::Repository;
 pub use rest::UserProfile;
 pub use search::{SearchRepository, search_repositories};

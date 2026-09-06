@@ -182,8 +182,7 @@ pub async fn get_repository_info(
     };
 
     let response = client
-        .client()
-        .post(GITHUB_GRAPHQL_URL)
+        .post(client.graphql_url())
         .json(&query)
         .send()
         .await?;
