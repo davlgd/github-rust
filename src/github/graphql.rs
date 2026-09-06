@@ -163,68 +163,10 @@ pub async fn get_repository_info(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "Invalid or missing GitHub token".to_string(),
-            )),
-            403 => {
-                // Parse HTTP 403 more intelligently
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "GraphQL API rate limit exceeded".to_string(),
-                    ))
-                } else if error_lower.contains("repository access blocked")
-                    || error_lower.contains("access blocked")
-                    || error_lower.contains("blocked")
-                {
-                    Err(GitHubError::AccessBlockedError(format!(
-                        "{}/{}",
-                        owner, name
-                    )))
-                } else {
-                    // Generic access denied (permissions, private repo, etc.)
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied to {}/{}: {}",
-                        owner, name, error_text
-                    )))
-                }
-            }
-            404 => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-            451 => Err(GitHubError::DmcaBlockedError(format!("{}/{}", owner, name))),
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
-
-    let graphql_response: GraphQLResponse<RepositoryResponse> = response.json().await?;
-
-    if let Some(errors) = graphql_response.errors {
-        let error_message = errors
-            .into_iter()
-            .map(|e| e.message)
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(GitHubError::ApiError {
-            status: 200,
-            message: error_message,
-        });
-    }
-
-    match graphql_response.data {
-        Some(data) => match data.repository {
-            Some(repo) => Ok(repo.into()),
-            None => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-        },
-        None => Err(GitHubError::ParseError(
-            "No data in GraphQL response".to_string(),
-        )),
-    }
+    let data: RepositoryResponse = super::response::graphql(response)
+        .await
+        .map_err(|error| error.with_repository_context(owner, name))?;
+    data.repository
+        .map(Into::into)
+        .ok_or_else(|| GitHubError::NotFoundError(format!("{owner}/{name}")))
 }

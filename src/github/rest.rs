@@ -68,46 +68,9 @@ pub async fn get_repository_info(
 
     let response = client.get(&repo_url).send().await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "Invalid or missing GitHub token".to_string(),
-            )),
-            403 => {
-                // Parse HTTP 403 more intelligently
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "REST API rate limit exceeded".to_string(),
-                    ))
-                } else if error_lower.contains("repository access blocked")
-                    || error_lower.contains("access blocked")
-                    || error_lower.contains("blocked")
-                {
-                    Err(GitHubError::AccessBlockedError(format!(
-                        "{}/{}",
-                        owner, name
-                    )))
-                } else {
-                    // Generic access denied (permissions, private repo, etc.)
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied to {}/{}: {}",
-                        owner, name, error_text
-                    )))
-                }
-            }
-            404 => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-            451 => Err(GitHubError::DmcaBlockedError(format!("{}/{}", owner, name))),
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
+    let response = super::response::check(response)
+        .await
+        .map_err(|error| error.with_repository_context(owner, name))?;
 
     let rest_repo: RestRepository = response.json().await?;
 
@@ -118,12 +81,13 @@ pub async fn get_repository_info(
         encoded_name
     );
     let lang_response = client.get(&languages_url).send().await?;
-    let language_stats: Option<LanguageStats> = if lang_response.status().is_success() {
-        Some(lang_response.json().await?)
-    } else {
-        tracing::debug!(status = %lang_response.status(), "Language breakdown unavailable");
-        None
-    };
+    let language_stats: Option<LanguageStats> =
+        if lang_response.status() != reqwest::StatusCode::NOT_FOUND {
+            Some(super::response::check(lang_response).await?.json().await?)
+        } else {
+            tracing::debug!(status = %lang_response.status(), "Language breakdown unavailable");
+            None
+        };
 
     Ok(convert_rest_repository(rest_repo, language_stats))
 }
@@ -133,36 +97,7 @@ pub async fn get_user_profile(client: &GitHubClient) -> Result<UserProfile> {
 
     let response = client.get(&user_url).send().await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "GitHub token is required to get user profile".to_string(),
-            )),
-            403 => {
-                // Parse HTTP 403 more intelligently
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "REST API rate limit exceeded".to_string(),
-                    ))
-                } else {
-                    // Generic access denied for user profile
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied for user profile: {}",
-                        error_text
-                    )))
-                }
-            }
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
+    let response = super::response::check(response).await?;
 
     let user_profile: UserProfile = response.json().await?;
     Ok(user_profile)
@@ -201,36 +136,7 @@ pub async fn get_user_starred_repositories(client: &GitHubClient) -> Result<Vec<
 
         let response = client.get(&starred_url).send().await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return match status.as_u16() {
-                401 => Err(GitHubError::AuthenticationError(
-                    "GitHub token is required to get starred repositories".to_string(),
-                )),
-                403 => {
-                    // Parse HTTP 403 more intelligently
-                    let error_lower = error_text.to_lowercase();
-                    if error_lower.contains("rate limit")
-                        || error_lower.contains("api rate limit exceeded")
-                    {
-                        Err(GitHubError::RateLimitError(
-                            "REST API rate limit exceeded".to_string(),
-                        ))
-                    } else {
-                        // Generic access denied for starred repositories
-                        Err(GitHubError::AuthenticationError(format!(
-                            "Access denied for starred repositories: {}",
-                            error_text
-                        )))
-                    }
-                }
-                _ => Err(GitHubError::ApiError {
-                    status: status.as_u16(),
-                    message: error_text,
-                }),
-            };
-        }
+        let response = super::response::check(response).await?;
 
         let starred_repos: Vec<StarredRepository> = response.json().await?;
 
@@ -281,44 +187,9 @@ pub async fn get_repository_stargazers(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "Invalid or missing GitHub token".to_string(),
-            )),
-            403 => {
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "REST API rate limit exceeded".to_string(),
-                    ))
-                } else if error_lower.contains("repository access blocked")
-                    || error_lower.contains("access blocked")
-                    || error_lower.contains("blocked")
-                {
-                    Err(GitHubError::AccessBlockedError(format!(
-                        "{}/{}",
-                        owner, name
-                    )))
-                } else {
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied to {}/{}: {}",
-                        owner, name, error_text
-                    )))
-                }
-            }
-            404 => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-            451 => Err(GitHubError::DmcaBlockedError(format!("{}/{}", owner, name))),
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
+    let response = super::response::check(response)
+        .await
+        .map_err(|error| error.with_repository_context(owner, name))?;
 
     let stargazers: Vec<StargazerWithDate> = response.json().await?;
     Ok(stargazers)

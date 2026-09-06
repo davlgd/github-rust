@@ -234,62 +234,13 @@ pub async fn search_repositories(
             .send()
             .await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return match status.as_u16() {
-                401 => Err(GitHubError::AuthenticationError(
-                    "Invalid or missing GitHub token".to_string(),
-                )),
-                403 => Err(GitHubError::RateLimitError(
-                    "GraphQL API rate limit exceeded".to_string(),
-                )),
-                451 => Err(GitHubError::DmcaBlockedError(
-                    "Search blocked for legal reasons".to_string(),
-                )),
-                _ => Err(GitHubError::ApiError {
-                    status: status.as_u16(),
-                    message: error_text,
-                }),
-            };
-        }
-
-        let graphql_response: GraphQLResponse<SearchResult> = response.json().await?;
-
-        if let Some(errors) = graphql_response.errors {
-            let error_message = errors
-                .into_iter()
-                .map(|e| e.message)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(GitHubError::ApiError {
-                status: 200,
-                message: error_message,
-            });
-        }
-
-        match graphql_response.data {
-            Some(data) => {
-                let page_repositories: Vec<SearchRepository> = data
-                    .search
-                    .edges
-                    .into_iter()
-                    .map(|edge| edge.node.into())
-                    .collect();
-
-                all_repositories.extend(page_repositories);
-
-                if data.search.page_info.has_next_page && all_repositories.len() < max_total {
-                    after_cursor = data.search.page_info.end_cursor;
-                } else {
-                    break;
-                }
-            }
-            None => {
-                return Err(GitHubError::ParseError(
-                    "No data in GraphQL response".to_string(),
-                ));
-            }
+        let data: SearchResult = super::response::graphql(response).await?;
+        let page_repositories = data.search.edges.into_iter().map(|edge| edge.node.into());
+        all_repositories.extend(page_repositories);
+        if data.search.page_info.has_next_page && all_repositories.len() < max_total {
+            after_cursor = data.search.page_info.end_cursor;
+        } else {
+            break;
         }
     }
 

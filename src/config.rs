@@ -4,7 +4,6 @@ pub const GITHUB_API_URL: &str = "https://api.github.com";
 pub const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
 pub const USER_AGENT: &str = "github-rust/0.1.0";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-pub const MAX_RETRIES: u32 = 3;
 
 pub const GRAPHQL_REPOSITORY_QUERY: &str = r#"
 query($owner: String!, $name: String!) {

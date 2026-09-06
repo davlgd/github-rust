@@ -189,7 +189,7 @@ impl GitHubService {
     /// let limits = service.check_rate_limit().await?;
     ///
     /// println!("Remaining: {}/{}", limits.remaining, limits.limit);
-    /// println!("Resets at: {}", limits.reset_datetime());
+    /// println!("Resets at: {:?}", limits.reset_datetime());
     ///
     /// if limits.is_exceeded() {
     ///     println!("Rate limited! Wait {:?}", limits.time_until_reset());
@@ -197,8 +197,13 @@ impl GitHubService {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn check_rate_limit(&self) -> Result<crate::github::client::RateLimit> {
+    pub async fn check_rate_limit(&self) -> Result<crate::RateLimit> {
         self.client.check_rate_limit().await
+    }
+
+    /// Returns separate REST core, search and GraphQL quotas when available.
+    pub async fn check_rate_limits(&self) -> Result<crate::RateLimits> {
+        self.client.check_rate_limits().await
     }
 
     /// Returns whether a GitHub token is configured.

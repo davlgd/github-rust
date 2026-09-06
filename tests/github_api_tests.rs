@@ -1,3 +1,5 @@
+#[path = "cases/errors.rs"]
+mod errors;
 #[path = "cases/repository.rs"]
 mod repository;
 mod support;
@@ -57,24 +59,6 @@ fn test_search_repository_default() {
     assert_eq!(repo.name, "");
     assert_eq!(repo.stargazer_count, 0);
     assert_eq!(repo.fork_count, 0);
-}
-
-#[test]
-fn test_github_error_types() {
-    use github_rust::GitHubError;
-
-    // Test different error types can be created
-    let network_error = GitHubError::NetworkError("Connection failed".to_string());
-    let parse_error = GitHubError::ParseError("Invalid JSON".to_string());
-    let api_error = GitHubError::ApiError {
-        status: 404,
-        message: "Repository not found".to_string(),
-    };
-
-    // Errors should display meaningful messages
-    assert!(format!("{}", network_error).contains("Connection failed"));
-    assert!(format!("{}", parse_error).contains("Invalid JSON"));
-    assert!(format!("{}", api_error).contains("Repository not found"));
 }
 
 #[tokio::test]

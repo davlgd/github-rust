@@ -80,46 +80,29 @@ impl GitHubClient {
         &self.client
     }
 
+    /// Returns the REST core quota. Use `check_rate_limits` for GraphQL and search quotas.
     pub async fn check_rate_limit(&self) -> Result<RateLimit> {
+        self.check_rate_limits()
+            .await?
+            .resources
+            .remove("core")
+            .ok_or_else(|| GitHubError::ParseError("Missing core rate limit resource".into()))
+    }
+
+    /// Retrieves separate quotas for every resource returned by GitHub.
+    pub async fn check_rate_limits(&self) -> Result<RateLimits> {
         let response = self
             .get(format!("{}/rate_limit", self.rest_url()))
             .send()
             .await?;
-
-        if response.status() == 403 {
-            // For rate_limit endpoint, 403 should always be actual rate limiting
-            // But let's be defensive and check the response content
-            let error_text = response.text().await.unwrap_or_default();
-            let error_lower = error_text.to_lowercase();
-
-            if error_lower.contains("rate limit") || error_lower.is_empty() {
-                // Empty response or explicit rate limit message
-                return Err(GitHubError::RateLimitError(
-                    "API rate limit exceeded".to_string(),
-                ));
-            } else if error_lower.contains("repository access blocked")
-                || error_lower.contains("access blocked")
-            {
-                return Err(GitHubError::AccessBlockedError(
-                    "Rate limit check blocked".to_string(),
-                ));
-            } else {
-                return Err(GitHubError::AuthenticationError(format!(
-                    "Access denied for rate limit check: {}",
-                    error_text
-                )));
-            }
-        }
-
-        let rate_limit_response: serde_json::Value = response.json().await?;
-        let rate = &rate_limit_response["rate"];
-
-        Ok(RateLimit {
-            limit: rate["limit"].as_u64().unwrap_or(0),
-            remaining: rate["remaining"].as_u64().unwrap_or(0),
-            reset: rate["reset"].as_u64().unwrap_or(0),
-        })
+        Ok(super::response::check(response).await?.json().await?)
     }
+}
+
+/// Quotas indexed by GitHub resource names such as `core`, `search` and `graphql`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RateLimits {
+    pub resources: std::collections::BTreeMap<String, RateLimit>,
 }
 
 /// Explicit configuration for authentication, endpoints and HTTP transport.
@@ -208,9 +191,9 @@ impl GitHubClientBuilder {
 ///
 /// Provides information about API usage limits and reset times.
 /// Authenticated requests have a limit of 5000/hour, unauthenticated 60/hour.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct RateLimit {
-    /// Maximum number of requests allowed per hour
+    /// Maximum requests or points allowed in the current resource-specific window
     pub limit: u64,
     /// Number of requests remaining in the current window
     pub remaining: u64,
@@ -221,8 +204,10 @@ pub struct RateLimit {
 impl RateLimit {
     /// Returns the datetime when the rate limit resets.
     #[must_use]
-    pub fn reset_datetime(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(self.reset as i64, 0).unwrap_or_else(chrono::Utc::now)
+    pub fn reset_datetime(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        i64::try_from(self.reset)
+            .ok()
+            .and_then(|reset| chrono::DateTime::from_timestamp(reset, 0))
     }
 
     /// Returns the duration until the rate limit resets.

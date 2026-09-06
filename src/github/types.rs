@@ -12,12 +12,13 @@ pub struct GraphQLResponse<T> {
     pub errors: Option<Vec<GraphQLError>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GraphQLError {
     pub message: String,
     #[serde(rename = "type")]
-    #[allow(dead_code)]
     pub error_type: Option<String>,
+    pub path: Option<Vec<serde_json::Value>>,
+    pub extensions: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
