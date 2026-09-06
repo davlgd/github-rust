@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.2
+
+- Add lazy `Send` streams of owned repository, issue and pull-request pages.
+- Share pagination between streams, collections and callbacks, preserving validation, sorted final lists, bounded concurrency and cancellation.
+
 ## v0.2.1
 
 - Document `async move` capture and the boxed-future workaround for generic `Send` progress adapters ([#3](https://github.com/davlgd/github-rust/issues/3)).
