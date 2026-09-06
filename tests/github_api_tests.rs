@@ -8,6 +8,8 @@ mod fallback;
 mod repository;
 #[path = "cases/search.rs"]
 mod search;
+#[path = "cases/send_progress.rs"]
+mod send_progress;
 mod support;
 #[path = "cases/work_items.rs"]
 mod work_items;

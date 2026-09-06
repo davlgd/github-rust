@@ -1,7 +1,7 @@
 [package]
 name = "github-rust"
 description = "Rust library for GitHub API integration with GraphQL/REST support"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["davlgd"]

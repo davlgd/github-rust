@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.1
+
+- Document `async move` capture and the boxed-future workaround for generic `Send` progress adapters ([#3](https://github.com/davlgd/github-rust/issues/3)).
+- Add a compiled Tokio example and regression checks for repository, issue and PR callbacks in `Send` futures and multithreaded tasks.
+
 ## v0.2.0
 
 - Add authenticated viewer and organization discovery, owned repository inventories, and open issue/PR collections.

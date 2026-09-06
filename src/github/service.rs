@@ -404,6 +404,34 @@ impl GitHubService {
     /// Pages are provisional until this method succeeds. A callback error or dropping
     /// the returned future cancels traversal; no background tasks are spawned.
     /// GitHub does not provide a transactional snapshot across pages.
+    ///
+    /// # Send adapters
+    ///
+    /// Generic adapters using async closures can hit Rust's `Send` inference
+    /// limitation when borrowing the callback. Capture it by value with `async move`
+    /// and give the callback owned state (for example, `Arc` for shared state).
+    /// This example forwards owned pages, so it clones at that boundary:
+    ///
+    /// ```no_run
+    /// use github_rust::{GitHubService, RepositoryPage, Result};
+    /// use std::future::Future;
+    ///
+    /// async fn collect<F, Fut>(service: &GitHubService, mut progress: F) -> Result<()>
+    /// where
+    ///     F: FnMut(RepositoryPage) -> Fut + Send,
+    ///     Fut: Future<Output = Result<()>> + Send,
+    /// {
+    ///     service.get_owned_repositories_with_progress(
+    ///         "owner",
+    ///         async move |page| { progress(page.clone()).await },
+    ///     ).await?;
+    ///     Ok(())
+    /// }
+    /// # fn assert_send(_: impl Future<Output = Result<()>> + Send) {}
+    /// # fn check(service: &GitHubService) {
+    /// #     assert_send(collect(service, |_| async { Ok(()) }));
+    /// # }
+    /// ```
     pub async fn get_owned_repositories_with_progress<F>(
         &self,
         login: &str,
@@ -443,6 +471,9 @@ impl GitHubService {
     /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
     /// their embedded 100-node pages, otherwise this returns a pagination error.
     /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
+    /// For generic adapters requiring `Send`, see the `async move` adapter example on
+    /// [`Self::get_owned_repositories_with_progress`]. Here callbacks receive
+    /// `&WorkItemPage<Issue>`.
     pub async fn get_open_issues_with_progress<F>(
         &self,
         repositories: &[super::RepositoryCoordinates],
@@ -494,6 +525,9 @@ impl GitHubService {
     /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
     /// their embedded 100-node pages, otherwise this returns a pagination error.
     /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
+    /// For generic adapters requiring `Send`, see the `async move` adapter example on
+    /// [`Self::get_owned_repositories_with_progress`]. Here callbacks receive
+    /// `&WorkItemPage<PullRequest>`.
     pub async fn get_open_pull_requests_with_progress<F>(
         &self,
         repositories: &[super::RepositoryCoordinates],
