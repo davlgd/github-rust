@@ -16,13 +16,13 @@ use wiremock::{
     matchers::{body_partial_json, method, path},
 };
 
-fn item(id: usize) -> Value {
+pub(super) fn item(id: usize) -> Value {
     json!({"id":format!("I_{id}"),"number":id+1,"title":"A work item","url":"https://github.com/owner/repo/issues/1",
         "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","author":null,
         "labels":{"totalCount":1,"nodes":[{"name":"bug","color":"abcdef"}]},
         "assignees":{"totalCount":1,"nodes":[{"login":"someone"}]},"comments":{"totalCount":4}})
 }
-fn response(
+pub(super) fn response(
     name: &str,
     nodes: Vec<Value>,
     total: usize,

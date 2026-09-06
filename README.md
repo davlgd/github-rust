@@ -115,6 +115,17 @@ async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()
 
 See [account_overview.rs](examples/account_overview.rs) for account discovery, repository filtering and batch calls.
 
+### Send callbacks
+
+Generic adapters using `async |page|` can encounter `Send is not general enough` when passed to `tokio::spawn` ([#3](https://github.com/davlgd/github-rust/issues/3)).
+
+Use `async move |page|` to capture the generic callback by value, and give that callback owned state (`Arc` for shared state).
+The [Send adapter example](examples/send_progress.rs) shows the bounds and a Tokio task.
+
+A normal `move` closure returning an explicitly typed `Pin<Box<dyn Future<Output = Result<()>> + Send>>` also works for owned callback futures.
+
+That adapter clones pages because its callback accepts owned data. Ordinary borrowed progress callbacks remain available without those copies.
+
 ### Limits
 
 Configure collection limits with `GitHubService::with_fetch_options()`:
