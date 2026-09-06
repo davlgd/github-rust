@@ -1,8 +1,8 @@
 # github-rust
 
-An async Rust library for repository metadata, repository search and stargazer access through GitHub's REST and GraphQL APIs.
+An async Rust library for GitHub accounts, repositories, open issues and pull requests, search and stargazer access through REST and GraphQL.
 
-**Development status:** this checkout prepares v0.2.0. The examples below describe the unreleased API; the package version remains `0.1.0` until a separate release. See [MIGRATING.md](MIGRATING.md) for changes from the published v0.1.0 API.
+This checkout contains the v0.2.0 API. See [CHANGELOG.md](CHANGELOG.md) for changes from v0.1.0.
 
 ## Using this checkout
 
@@ -12,7 +12,7 @@ github-rust = { path = "../github-rust" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-Rust 1.92 or later is required. The published v0.1.0 remains available as `github-rust = "0.1"` and uses the previous API.
+Rust 1.92 or later is required; the library uses edition 2024. The path dependency above works before registry publication of v0.2.0.
 
 ## Quick start
 
@@ -79,6 +79,43 @@ Repository models use ordinary Rust fields and serialize with snake_case keys, i
 - `languages` is an optional list of `LanguageUsage { language, bytes }`. A REST 404 for the language breakdown produces `None`. Other failures are returned. GraphQL retrieves up to 100 languages; check `languages_complete` before treating the list as exhaustive.
 
 Helpers include `language()`, `license()`, `license_spdx()`, `topics()`, `owner()`, `default_branch()`, `open_issues()` and `watcher_count()`.
+
+## Accounts, issues and pull requests
+
+Authenticated collection methods support complete pagination and asynchronous progress callbacks:
+
+```rust
+async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+    let viewer = service.get_viewer().await?;
+    let inventory = service.get_owned_repositories(&viewer.account.login).await?;
+    let scopes = inventory.repositories.iter()
+        .filter(|r| !r.is_archived && r.open_issue_count > 0)
+        .map(|r| r.coordinates()).collect::<github_rust::Result<Vec<_>>>()?;
+    let issues = service.get_open_issues_with_progress(&scopes, async |page| {
+        println!("{}: {} issues received", page.repository.name_with_owner, page.items.len());
+        Ok(())
+    }).await?;
+    println!("Complete: {} issues", issues.len());
+    Ok(())
+}
+```
+
+The matching `get_open_pull_requests*` methods return PR-specific draft and review fields.
+Use `with_fetch_options(FetchOptions { ..Default::default() })` to configure pagination and concurrent repository requests.
+Async callbacks borrow provisional pages without cloning them; only successful completion certifies the full traversal. Returning an error or dropping the future stops traversal.
+The inventory includes visible private repositories, forks and archives owned by the requested account.
+Empty batches succeed without authentication or callbacks. Other collection calls require a token.
+Batch methods accept explicit scopes without rediscovering ownership; applications choose whether to include archives or skip zero counts.
+Final work-item lists sort by update time descending, then node ID; callbacks across repositories arrive serially in completion order.
+
+Collection defaults are 100 nodes per page, 500 pages per connection and four concurrent repositories per call.
+Changing totals, duplicate node IDs, cursor cycles, empty progress, scope changes and exhausted caps produce errors.
+Labels and assignees must fit their embedded pages of 100; larger reported totals cause a pagination error instead of truncated success.
+These checks cannot provide snapshot isolation: GitHub data may change between requests without a detectable count change.
+
+Use `GitHubError::kind()` for application-owned error messages; raw `Display` output preserves upstream details and should not be exposed to untrusted clients.
+Credential resolution, cache policy and request-level scheduling belong to the application; concurrency limits apply independently to each call.
+See the [account overview example](examples/account_overview.rs) for inventory reuse and filtering.
 
 ## Search
 
