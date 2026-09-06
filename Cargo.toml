@@ -1,7 +1,7 @@
 [package]
 name = "github-rust"
 description = "Rust library for GitHub API integration with GraphQL/REST support"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["davlgd"]
@@ -13,7 +13,7 @@ documentation = "https://docs.rs/github-rust"
 readme = "README.md"
 keywords = ["github", "api", "graphql", "trending", "rust"]
 categories = ["api-bindings", "web-programming::http-client", "development-tools"]
-include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "MIGRATING.md", "CHANGELOG.md", "LICENSE*"]
+include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE*"]
 
 [dependencies]
 reqwest = { version = "0.13.4", features = ["json"] }

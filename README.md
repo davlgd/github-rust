@@ -1,18 +1,16 @@
 # github-rust
 
-An async Rust library for repository metadata, repository search and stargazer access through GitHub's REST and GraphQL APIs.
+An async Rust library for GitHub accounts, repositories, open issues and pull requests, search and stargazer access through REST and GraphQL.
 
-**Development status:** this checkout prepares v0.2.0. The examples below describe the unreleased API; the package version remains `0.1.0` until a separate release. See [MIGRATING.md](MIGRATING.md) for changes from the published v0.1.0 API.
+## Installation
 
-## Using this checkout
+Requires Rust 1.92 or later (edition 2024).
 
 ```toml
 [dependencies]
-github-rust = { path = "../github-rust" }
+github-rust = { git = "https://github.com/davlgd/github-rust" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
-
-Rust 1.92 or later is required. The published v0.1.0 remains available as `github-rust = "0.1"` and uses the previous API.
 
 ## Quick start
 
@@ -80,6 +78,57 @@ Repository models use ordinary Rust fields and serialize with snake_case keys, i
 
 Helpers include `language()`, `license()`, `license_spdx()`, `topics()`, `owner()`, `default_branch()`, `open_issues()` and `watcher_count()`.
 
+## Accounts, issues and pull requests
+
+These methods require a token. Empty repository batches return an empty list without authentication or callbacks.
+
+| Method | Returns |
+| --- | --- |
+| `get_viewer()` | Authenticated account and its visible organizations |
+| `get_owned_repositories(login)` | Repositories owned by a user or organization |
+| `get_open_issues(owner, name)` | Open issues with authors, labels, assignees and comment counts |
+| `get_open_pull_requests(owner, name)` | Open PRs, including draft status and review decisions |
+
+Repository inventories include visible private repositories, forks and archives.
+For batch calls, select repositories in your application and convert them with `RepositorySummary::coordinates()`.
+
+### Progress
+
+Use `get_open_issues_with_progress()` or `get_open_pull_requests_with_progress()` to process pages as they arrive:
+
+```rust
+async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+    let scopes = [github_rust::RepositoryCoordinates::new("rust-lang", "rust")?];
+    let issues = service.get_open_issues_with_progress(&scopes, async |page| {
+        println!("Received {} issues", page.items.len());
+        Ok(())
+    }).await?;
+    println!("Complete: {} issues", issues.len());
+    Ok(())
+}
+```
+
+- Callbacks borrow pages without copying them and run serially in arrival order.
+- Pages remain provisional until the call succeeds. Return an error or drop the future to cancel.
+- Final issue and PR lists sort by update time descending, then node ID.
+- Use `get_open_*_for_repositories()` when you only need the final list.
+
+See [account_overview.rs](examples/account_overview.rs) for account discovery, repository filtering and batch calls.
+
+### Limits
+
+Configure collection limits with `GitHubService::with_fetch_options()`:
+
+| `FetchOptions` field | Default |
+| --- | --- |
+| `page_size` | 100 nodes |
+| `max_pages` | 500 per connection |
+| `max_concurrent_repositories` | 4 per call |
+
+- Changing totals, duplicate IDs, invalid cursors and repository scope changes produce errors.
+- Reaching a page cap or receiving incomplete labels or assignees produces a pagination error. Embedded metadata is limited to 100 labels and 100 assignees per item.
+- GitHub does not provide a snapshot across pages; concurrent changes may remain undetected.
+
 ## Search
 
 Repository search requires a token and uses GraphQL:
@@ -115,6 +164,8 @@ GitHub [announced restrictions on stargazer listings](https://github.blog/change
 `get_user_profile()` and `get_user_starred_repositories()` require an authorized token. The starred-repository helper returns repository names and stops after 100 pages. If another page is needed at that point, it returns `PaginationError` instead of returning a silently truncated list.
 
 ## Quotas and errors
+
+Use `GitHubError::kind()` for application-facing messages. Raw `Display` output preserves upstream details and should stay in trusted diagnostics.
 
 ```rust
 async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
