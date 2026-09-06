@@ -1,7 +1,7 @@
 # GitHub Rust Library
 
 Small async Rust library for GitHub accounts, repositories, issues, PRs, search and stargazers.
-The package targets v0.2.0. Record user-visible changes in CHANGELOG.md;
+Record user-visible changes in CHANGELOG.md;
 version metadata does not itself publish a tag, GitHub release or registry package.
 
 ## Layout
