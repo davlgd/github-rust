@@ -13,7 +13,7 @@ documentation = "https://docs.rs/github-rust"
 readme = "README.md"
 keywords = ["github", "api", "graphql", "trending", "rust"]
 categories = ["api-bindings", "web-programming::http-client", "development-tools"]
-include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "LICENSE*"]
+include = ["src/**/*", "examples/**/*", "Cargo.toml", "README.md", "MIGRATING.md", "CHANGELOG.md", "LICENSE*"]
 
 [dependencies]
 reqwest = { version = "0.13.1", features = ["json"] }
@@ -27,9 +27,7 @@ secrecy = "0.10.3"
 
 [dev-dependencies]
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
-tokio-test = "0.4.5"
 wiremock = "0.6.5"
-tempfile = "3.24.0"
 
 # Production-optimized release profile for maximum performance and minimal binary size
 [profile.release]

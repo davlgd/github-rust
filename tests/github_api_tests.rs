@@ -68,14 +68,13 @@ fn test_search_repository_default() {
 #[tokio::test]
 #[ignore] // Only run with internet connection
 async fn test_real_github_api_rate_limit() {
-    // This test requires internet connection and may fail without proper token
-    let service = GitHubService::new();
-    if let Ok(service) = service {
-        let rate_limit_result = service.check_rate_limit().await;
-        // We don't assert success as it depends on network availability
-        // but the function should not panic
-        drop(rate_limit_result);
-    }
+    let limits = GitHubService::new()
+        .expect("Client construction failed")
+        .check_rate_limit()
+        .await
+        .expect("Live rate limit request failed");
+    assert!(limits.limit > 0);
+    assert!(limits.remaining <= limits.limit);
 }
 
 #[test]
