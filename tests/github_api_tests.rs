@@ -9,6 +9,8 @@ mod repository;
 #[path = "cases/search.rs"]
 mod search;
 mod support;
+#[path = "cases/work_items.rs"]
+mod work_items;
 
 use github_rust::{GitHubService, SearchRepository, StargazerWithDate, User};
 

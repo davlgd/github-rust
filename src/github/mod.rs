@@ -18,3 +18,9 @@ pub use types::*;
 
 pub use accounts::{Account, OwnedRepositories, RepositoryPage, RepositorySummary, Viewer};
 pub use pagination::FetchOptions;
+
+pub mod work_items;
+pub use work_items::{
+    Actor, Issue, Label, PullRequest, RepositoryCoordinates, RepositoryReference, ReviewDecision,
+    WorkItemPage,
+};
