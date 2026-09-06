@@ -70,10 +70,17 @@ pub enum GitHubError {
     DmcaBlockedError(String),
     InvalidInput(String),
     PaginationError(String),
-    ApiError { status: u16, message: String },
+    ApiError {
+        status: u16,
+        message: String,
+    },
     GraphQLError(Vec<GraphQLError>),
     ParseError(DecodeError),
     ConfigError(String),
+    FallbackError {
+        graphql: Box<GitHubError>,
+        rest: Box<GitHubError>,
+    },
 }
 
 impl fmt::Display for GitHubError {
@@ -101,6 +108,10 @@ impl fmt::Display for GitHubError {
                     .join("; ")
             ),
             Self::ParseError(error) => write!(f, "Failed to parse response: {error}"),
+            Self::FallbackError { graphql, rest } => write!(
+                f,
+                "GraphQL failed ({graphql}); REST fallback failed ({rest})"
+            ),
             Self::ConfigError(message) => write!(f, "Configuration error: {message}"),
         }
     }
@@ -109,6 +120,7 @@ impl fmt::Display for GitHubError {
 impl Error for GitHubError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::FallbackError { graphql, .. } => Some(graphql.as_ref()),
             Self::NetworkError(error) => Some(error),
             Self::ParseError(error) => Some(error),
             _ => None,

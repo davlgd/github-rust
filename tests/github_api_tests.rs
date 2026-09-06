@@ -1,5 +1,7 @@
 #[path = "cases/errors.rs"]
 mod errors;
+#[path = "cases/fallback.rs"]
+mod fallback;
 #[path = "cases/repository.rs"]
 mod repository;
 #[path = "cases/search.rs"]

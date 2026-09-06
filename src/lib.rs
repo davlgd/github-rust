@@ -38,8 +38,8 @@ pub mod github;
 pub use config::{GITHUB_API_URL, GITHUB_GRAPHQL_URL};
 pub use error::{DecodeError, GitHubError, RateLimitDetails, Result};
 pub use github::{
-    GitHubClient, GitHubClientBuilder, GitHubService, LanguageUsage, RateLimit, RateLimits,
-    Repository, SearchRepository, StargazerWithDate, User, UserProfile,
+    FallbackPolicy, GitHubClient, GitHubClientBuilder, GitHubService, LanguageUsage, RateLimit,
+    RateLimits, Repository, SearchRepository, StargazerWithDate, User, UserProfile,
 };
 
 use base64::Engine;
