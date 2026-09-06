@@ -1,33 +1,20 @@
 # github-rust
 
-A lightweight Rust library for GitHub API interactions with dual GraphQL/REST support.
+An async Rust library for repository metadata, repository search and stargazer access through GitHub's REST and GraphQL APIs.
 
-## Features
+**Development status:** this checkout prepares v0.2.0. The examples below describe the unreleased API; the package version remains `0.1.0` until a separate release. See [MIGRATING.md](MIGRATING.md) for changes from the published v0.1.0 API.
 
-- **Dual API Support**: GraphQL primary with automatic REST fallback
-- **Repository Search**: Find repositories by date, stars, and language
-- **Stargazer Tracking**: Get repository stargazers with timestamps
-- **Rate Limiting**: Built-in rate limit checking with helper methods
-- **Error Handling**: Comprehensive error types with actionable messages
-- **Security**: Token stored securely with automatic zeroization on drop
-
-## Installation
-
-Add to your `Cargo.toml`:
+## Using this checkout
 
 ```toml
 [dependencies]
-github-rust = "0.1"
-```
-
-This library uses async/await. You'll need an async runtime to execute the code. Examples use [Tokio](https://tokio.rs/):
-
-```toml
-[dependencies]
+github-rust = { path = "../github-rust" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-## Quick Start
+Rust 1.92 or later is required. The published v0.1.0 remains available as `github-rust = "0.1"` and uses the previous API.
+
+## Quick start
 
 ```rust
 use github_rust::{GitHubService, Result};
@@ -35,179 +22,137 @@ use github_rust::{GitHubService, Result};
 #[tokio::main]
 async fn main() -> Result<()> {
     let service = GitHubService::new()?;
-
-    // Get repository information
-    let repo = service.get_repository_info("microsoft", "vscode").await?;
+    let repo = service.get_repository_info("rust-lang", "rust").await?;
     println!("{}: {} stars", repo.name_with_owner, repo.stargazer_count);
-
-    // Use helper methods
-    if let Some(lang) = repo.language() {
-        println!("Language: {}", lang);
+    println!("Node ID: {}", repo.node_id);
+    if let Some(id) = repo.database_id {
+        println!("Database ID: {id}");
     }
-    println!("Topics: {:?}", repo.topics());
-
+    if let Some(count) = repo.open_issues() {
+        println!("Open issues: {count}");
+    }
     Ok(())
 }
 ```
 
-## API Overview
+Without a token, repository lookups use REST directly. With a token, they use GraphQL and fall back to REST only on HTTP 502, 503 or 504. Authentication, authorization, quota and decoding errors are returned without fallback. A failed fallback retains both causes in `GitHubError::FallbackError`.
 
-### GitHubService
+## Configuration and authentication
 
-The main entry point for all GitHub operations.
+`GitHubService::new()` reads `GITHUB_TOKEN` from the environment:
+
+```bash
+export GITHUB_TOKEN="your-token"
+```
+
+The library does **not** load `.env` files. Load them in your application if needed.
+
+For explicit configuration, use the builder. It does not read the environment and is anonymous unless a token is supplied:
 
 ```rust
-use github_rust::GitHubService;
+use github_rust::{FallbackPolicy, GitHubClient, GitHubService};
 
-let service = GitHubService::new()?;
-
-// Check if authenticated
-if service.has_token() {
-    println!("Using authenticated API (5000 requests/hour)");
-} else {
-    println!("Using unauthenticated API (60 requests/hour)");
+fn main() -> github_rust::Result<()> {
+let client = GitHubClient::builder()
+    .token("your-token".into())
+    .build()?;
+let service = GitHubService::with_client(client)
+    .with_fallback_policy(FallbackPolicy::Never);
+Ok(())
 }
 ```
 
-### Repository Information
+The builder also accepts `rest_url`, `graphql_url`, and an injected `reqwest::Client` through `http_client`. This supports local mocks and GitHub Enterprise endpoints. Configure both URLs for a custom installation; API availability depends on the server version and permissions. Custom endpoints receive the token, so use trusted URLs. An injected transport controls its own timeout, proxy and redirect policy; the default transport has a 30-second request timeout.
+
+The retained token uses `secrecy::SecretString` and is zeroized when dropped. HTTP requests also contain copies of its value in authorization headers; those copies are not covered by this zeroization guarantee. `GitHubClient::client()` exposes the raw transport without the library's authentication headers.
+
+## Repository data
+
+Repository models use ordinary Rust fields and serialize with snake_case keys, independently of the transport's JSON format:
+
+- `node_id` is an opaque string. `database_id` is an optional numeric ID. Do not decode node IDs.
+- `watcher_count` counts notification subscribers, independently of `stargazer_count`.
+- `open_issue_count` excludes pull requests. It is unavailable from the REST repository response.
+- `pull_request_count` includes all states, and `release_count` counts releases. Both are unavailable from the REST repository response.
+- An unavailable count is `None`; an observed zero is `Some(0)`.
+- `topics` is a `Vec<String>`; `default_branch` is an `Option<String>`.
+- `languages` is an optional list of `LanguageUsage { language, bytes }`. A REST 404 for the language breakdown produces `None`. Other failures are returned. GraphQL retrieves up to 100 languages; check `languages_complete` before treating the list as exhaustive.
+
+Helpers include `language()`, `license()`, `license_spdx()`, `topics()`, `owner()`, `default_branch()`, `open_issues()` and `watcher_count()`.
+
+## Search
+
+Repository search requires a token and uses GraphQL:
 
 ```rust
-// Get full repository details (uses GraphQL, falls back to REST)
-let repo = service.get_repository_info("owner", "repo").await?;
-
-println!("Name: {}", repo.name_with_owner);
-println!("Stars: {}", repo.stargazer_count);
-println!("Forks: {}", repo.fork_count);
-println!("Language: {:?}", repo.primary_language);
-println!("License: {:?}", repo.license_info);
-```
-
-### Search Repositories
-
-```rust
-// Search for recent repositories
-// Parameters: days_back, limit, language (optional), min_stars
-let repos = service.search_repositories(
-    30,           // Created in last 30 days
-    100,          // Limit to 100 results
-    Some("rust"), // Filter by language
-    50,           // Minimum 50 stars
-).await?;
-
+async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+let repos = service.search_repositories(30, 100, Some("Rust"), 50).await?;
 for repo in repos {
     println!("{}: {} stars", repo.name_with_owner, repo.stargazer_count);
 }
-```
-
-### Stargazers
-
-```rust
-// Get stargazers with timestamps
-let stargazers = service.get_repository_stargazers(
-    "microsoft", "vscode",
-    Some(100),  // per_page
-    Some(1),    // page
-).await?;
-
-for stargazer in stargazers {
-    println!("{} starred at {}", stargazer.user.login, stargazer.starred_at);
+Ok(())
 }
 ```
 
-### Rate Limits
+Search selects public repositories created after the date `days_back` days ago, with at least `min_stars`, ordered by stars descending. It caps results at 1,000 and requests only the number still needed. A zero limit returns an empty list without a request. Invalid dates or language syntax produce `InvalidInput`; missing, repeated or nonprogressing pagination cursors produce `PaginationError`.
+
+## Stargazers and starred repositories
 
 ```rust
-let limits = service.check_rate_limit().await?;
-println!("Remaining: {}/{}", limits.remaining, limits.limit);
-println!("Used: {}", limits.used());
-println!("Resets at: {}", limits.reset_datetime());
-
-if limits.is_exceeded() {
-    println!("Rate limited! Wait {:?}", limits.time_until_reset());
+async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+let stargazers = service.get_repository_stargazers("owner", "repo", Some(100), Some(1)).await?;
+for star in stargazers {
+    println!("{} starred at {}", star.user.login, star.starred_at);
+}
+Ok(())
 }
 ```
 
-### User Profile
+GitHub [announced restrictions on stargazer listings](https://github.blog/changelog/2026-06-30-upcoming-access-restrictions-to-public-api-endpoints-and-ui-views/) to administrators and collaborators. A public repository alone does not guarantee access: GitHub documents possible empty responses or HTTP 403. This method reflects the server's response and cannot distinguish an access-filtered empty list from a repository with no stars. It is not a general public star-history API.
+
+`per_page` defaults to 30 and is capped at 100; `page` defaults to 1. Zero values are rejected. The first page is not guaranteed to contain the most recent stars.
+
+`get_user_profile()` and `get_user_starred_repositories()` require an authorized token. The starred-repository helper returns repository names and stops after 100 pages. If another page is needed at that point, it returns `PaginationError` instead of returning a silently truncated list.
+
+## Quotas and errors
 
 ```rust
-// Requires authentication
-let profile = service.get_user_profile().await?;
-println!("Logged in as: {}", profile.login);
-
-// Get user's starred repositories
-let starred = service.get_user_starred_repositories().await?;
-println!("You have starred {} repositories", starred.len());
-```
-
-## Error Handling
-
-The library provides comprehensive error types:
-
-```rust
-use github_rust::{GitHubError, Result};
-
-match service.get_repository_info("owner", "repo").await {
-    Ok(repo) => println!("Found: {}", repo.name),
-    Err(GitHubError::NotFoundError(name)) => println!("Repository {} not found", name),
-    Err(GitHubError::RateLimitError(msg)) => println!("Rate limited: {}", msg),
-    Err(GitHubError::AuthenticationError(msg)) => println!("Auth error: {}", msg),
-    Err(e) => println!("Other error: {}", e),
+async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+let quotas = service.check_rate_limits().await?;
+for (resource, limit) in quotas.resources {
+    println!("{resource}: {}/{} remaining", limit.remaining, limit.limit);
+    println!("Reset: {:?}", limit.reset_datetime());
+}
+Ok(())
 }
 ```
 
-## Types
+`check_rate_limit()` is a convenience method for the REST `core` quota. Search and GraphQL have separate quotas; token presence alone does not establish the available allowance. `RateLimit` provides `used()`, `is_exceeded()`, `time_until_reset()` and `reset_datetime()`; an unrepresentable timestamp returns `None` from the last helper.
 
-### SearchRepository
+`RateLimitError` contains `RateLimitDetails`: the HTTP status, resource, remaining allowance, reset timestamp, original `Retry-After`, request ID and GraphQL errors when present. The library does not automatically sleep or retry. Applications can use this metadata to implement a bounded retry policy.
 
-Returned by `search_repositories()`:
+Other errors distinguish authentication, permission denial, unavailable resources, legal restrictions, API status errors, typed GraphQL errors, pagination and response parsing. Transport and decoding errors preserve their original `std::error::Error::source()` chains. GraphQL errors are returned even if the response also includes partial data.
 
-```rust
-pub struct SearchRepository {
-    pub id: String,
-    pub name: String,
-    pub name_with_owner: String,
-    pub description: Option<String>,
-    pub url: String,
-    pub stargazer_count: u32,
-    pub fork_count: u32,
-    pub created_at: String,
-    pub updated_at: String,
-    pub pushed_at: Option<String>,
-    pub primary_language: Option<Language>,
-    pub license_info: Option<License>,
-    pub repository_topics: TopicConnection,
-}
-```
-
-### RateLimit
-
-```rust
-pub struct RateLimit {
-    pub limit: u64,
-    pub remaining: u64,
-    pub reset: u64,  // Unix timestamp
-}
-
-impl RateLimit {
-    pub fn reset_datetime(&self) -> DateTime<Utc>;  // When limit resets
-    pub fn time_until_reset(&self) -> Duration;     // Time until reset
-    pub fn is_exceeded(&self) -> bool;              // True if no requests left
-    pub fn used(&self) -> u64;                      // Requests used
-}
-```
-
-## Authentication
-
-Set `GITHUB_TOKEN` environment variable to get access to private repositories and higher rate limits:
+## Development
 
 ```bash
-export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-targets --locked
+cargo test --doc --locked
+cargo doc --no-deps --locked
 ```
 
-Or use a `.env` file in your project root.
+Tests use local HTTP mocks and do not require a token or contact GitHub. The single live API test is ignored by default; run it explicitly with `cargo test --test github_api_tests test_real_github_api_rate_limit -- --ignored`.
 
-- [GitHub Tokens Settings](https://github.com/settings/tokens)
+CI checks Rust 1.92 and stable on Linux, plus stable on macOS. Examples:
+
+```bash
+cargo run --example basic_usage
+cargo run --example search_repositories
+cargo run --example stargazers -- owner/repo
+```
 
 ## License
 
-Apache-2.0
+Apache-2.0.

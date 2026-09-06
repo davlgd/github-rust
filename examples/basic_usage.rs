@@ -12,9 +12,9 @@ async fn main() -> Result<()> {
 
     // Check authentication status
     if service.has_token() {
-        println!("Authenticated: 5,000 requests/hour");
+        println!("Token configured; quotas depend on the API resource");
     } else {
-        println!("Anonymous: 60 requests/hour");
+        println!("Anonymous access");
         println!("Set GITHUB_TOKEN for higher limits\n");
     }
 

@@ -190,7 +190,7 @@ impl GitHubClientBuilder {
 /// GitHub API rate limit information.
 ///
 /// Provides information about API usage limits and reset times.
-/// Authenticated requests have a limit of 5000/hour, unauthenticated 60/hour.
+/// Quotas depend on the API resource and authentication type.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RateLimit {
     /// Maximum requests or points allowed in the current resource-specific window
@@ -202,7 +202,7 @@ pub struct RateLimit {
 }
 
 impl RateLimit {
-    /// Returns the datetime when the rate limit resets.
+    /// Returns the reset datetime, or None if the timestamp cannot be represented.
     #[must_use]
     pub fn reset_datetime(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         i64::try_from(self.reset)

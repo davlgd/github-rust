@@ -29,7 +29,7 @@
 //!
 //! ## Authentication
 //!
-//! Set `GITHUB_TOKEN` environment variable for higher rate limits (5000/hour vs 60/hour).
+//! Set `GITHUB_TOKEN` for authenticated requests. Quotas vary by API resource and token.
 
 pub mod config;
 pub mod error;
