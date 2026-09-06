@@ -37,7 +37,7 @@ Without a token, repository lookups use REST directly. With a token, they use Gr
 
 ## Configuration and authentication
 
-`GitHubService::new()` reads `GITHUB_TOKEN` from the environment:
+`GitHubService::new()` reads `GITHUB_TOKEN` from the environment. An unset, empty or whitespace-only value selects anonymous access:
 
 ```bash
 export GITHUB_TOKEN="your-token"
@@ -51,12 +51,9 @@ For explicit configuration, use the builder. It does not read the environment an
 use github_rust::{FallbackPolicy, GitHubClient, GitHubService};
 
 fn main() -> github_rust::Result<()> {
-let client = GitHubClient::builder()
-    .token("your-token".into())
-    .build()?;
-let service = GitHubService::with_client(client)
-    .with_fallback_policy(FallbackPolicy::Never);
-Ok(())
+    let client = GitHubClient::builder().token("your-token".into()).build()?;
+    let service = GitHubService::with_client(client).with_fallback_policy(FallbackPolicy::Never);
+    Ok(())
 }
 ```
 
@@ -66,7 +63,7 @@ The retained token uses `secrecy::SecretString` and is zeroized when dropped. HT
 
 ## Repository data
 
-Repository models use ordinary Rust fields and serialize with snake_case keys, independently of the transport's JSON format:
+Repository models use Rust field names in JSON. The shared `License` type retains `spdxId` for its `spdx_id` field; this also applies inside `license_info`.
 
 - `node_id` is an opaque string. `database_id` is an optional numeric ID. Do not decode node IDs.
 - `watcher_count` counts notification subscribers, independently of `stargazer_count`.
@@ -128,11 +125,16 @@ Use `get_owned_repositories_with_progress()`, `get_open_issues_with_progress()` 
 
 ```rust
 async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
-    let scopes = [github_rust::RepositoryCoordinates::new("rust-lang", "rust")?];
-    let issues = service.get_open_issues_with_progress(&scopes, async |page| {
-        println!("Received {} issues", page.items.len());
-        Ok(())
-    }).await?;
+    let scopes = [github_rust::RepositoryCoordinates::new(
+        "rust-lang",
+        "rust",
+    )?];
+    let issues = service
+        .get_open_issues_with_progress(&scopes, async |page| {
+            println!("Received {} issues", page.items.len());
+            Ok(())
+        })
+        .await?;
     println!("Complete: {} issues", issues.len());
     Ok(())
 }
@@ -149,12 +151,13 @@ See [account_overview.rs](examples/account_overview.rs) for account discovery, r
 
 Configure collection limits with `GitHubService::with_fetch_options()`:
 
-| `FetchOptions` field | Default |
-| --- | --- |
-| `page_size` | 100 nodes |
-| `max_pages` | 500 per connection |
-| `max_concurrent_repositories` | 4 per call |
+| `FetchOptions` field | Default | Valid values |
+| --- | --- | --- |
+| `page_size` | 100 nodes | 1–100 |
+| `max_pages` | 500 per connection | At least 1 |
+| `max_concurrent_repositories` | 4 per call | At least 1 |
 
+- The product of `max_pages` and `page_size` must fit in `usize`. Invalid limits return an error naming the field.
 - Changing totals, duplicate IDs, invalid cursors and repository scope changes produce errors.
 - Reaching a page cap or receiving incomplete labels or assignees produces a pagination error. Embedded metadata is limited to 100 labels and 100 assignees per item.
 - GitHub does not provide a snapshot across pages; concurrent changes may remain undetected.
@@ -165,11 +168,13 @@ Repository search requires a token and uses GraphQL:
 
 ```rust
 async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
-let repos = service.search_repositories(30, 100, Some("Rust"), 50).await?;
-for repo in repos {
-    println!("{}: {} stars", repo.name_with_owner, repo.stargazer_count);
-}
-Ok(())
+    let repos = service
+        .search_repositories(30, 100, Some("Rust"), 50)
+        .await?;
+    for repo in repos {
+        println!("{}: {} stars", repo.name_with_owner, repo.stargazer_count);
+    }
+    Ok(())
 }
 ```
 
@@ -179,11 +184,13 @@ Search selects public repositories created after the date `days_back` days ago, 
 
 ```rust
 async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
-let stargazers = service.get_repository_stargazers("owner", "repo", Some(100), Some(1)).await?;
-for star in stargazers {
-    println!("{} starred at {}", star.user.login, star.starred_at);
-}
-Ok(())
+    let stargazers = service
+        .get_repository_stargazers("owner", "repo", Some(100), Some(1))
+        .await?;
+    for star in stargazers {
+        println!("{} starred at {}", star.user.login, star.starred_at);
+    }
+    Ok(())
 }
 ```
 
@@ -199,12 +206,12 @@ Use `GitHubError::kind()` for application-facing messages. Raw `Display` output 
 
 ```rust
 async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
-let quotas = service.check_rate_limits().await?;
-for (resource, limit) in quotas.resources {
-    println!("{resource}: {}/{} remaining", limit.remaining, limit.limit);
-    println!("Reset: {:?}", limit.reset_datetime());
-}
-Ok(())
+    let quotas = service.check_rate_limits().await?;
+    for (resource, limit) in quotas.resources {
+        println!("{resource}: {}/{} remaining", limit.remaining, limit.limit);
+        println!("Reset: {:?}", limit.reset_datetime());
+    }
+    Ok(())
 }
 ```
 
@@ -226,11 +233,11 @@ cargo doc --no-deps --locked
 
 Tests use local HTTP mocks and do not require a token or contact GitHub. The single live API test is ignored by default; run it explicitly with `cargo test --test github_api_tests test_real_github_api_rate_limit -- --ignored`.
 
-CI checks Rust 1.92 and stable on Linux, plus stable on macOS. Examples:
+CI checks Rust 1.92 and stable on Linux, plus stable on macOS. Dependabot checks Cargo dependencies and GitHub Actions monthly. Examples:
 
 ```bash
 cargo run --example basic_usage
-cargo run --example search_repositories
+GITHUB_TOKEN=your-token cargo run --example search_repositories
 cargo run --example stargazers -- owner/repo
 ```
 

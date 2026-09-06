@@ -1,4 +1,5 @@
-//! Search for trending repositories example.
+//! Search for recently created repositories with a minimum star count.
+//! Requires GITHUB_TOKEN.
 //!
 //! Run with: `cargo run --example search_repositories`
 
@@ -8,7 +9,7 @@ use github_rust::{GitHubService, Result};
 async fn main() -> Result<()> {
     let service = GitHubService::new()?;
 
-    println!("Searching for trending Rust repositories...\n");
+    println!("Searching for recently created Rust repositories...\n");
 
     // Search for Rust repos created in the last 30 days with at least 50 stars
     let repos = service

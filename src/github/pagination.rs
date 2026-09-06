@@ -7,8 +7,11 @@ use std::collections::HashSet;
 /// Existing search and REST pagination retain their own limits.
 #[derive(Debug, Clone, Copy)]
 pub struct FetchOptions {
+    /// Nodes requested per page, from 1 to 100. Default: 100.
     pub page_size: u32,
+    /// Maximum pages per connection, at least 1. Default: 500.
     pub max_pages: usize,
+    /// Maximum repository requests in flight, at least 1. Default: 4.
     pub max_concurrent_repositories: usize,
 }
 impl Default for FetchOptions {
@@ -22,17 +25,23 @@ impl Default for FetchOptions {
 }
 impl FetchOptions {
     pub(crate) fn validate(self) -> Result<Self> {
-        if !(1..=100).contains(&self.page_size)
-            || self.max_pages == 0
-            || self.max_concurrent_repositories == 0
-            || self
-                .max_pages
-                .checked_mul(self.page_size as usize)
-                .is_none()
+        let invalid = if !(1..=100).contains(&self.page_size) {
+            Some("page_size must be between 1 and 100")
+        } else if self.max_pages == 0 {
+            Some("max_pages must be greater than zero")
+        } else if self.max_concurrent_repositories == 0 {
+            Some("max_concurrent_repositories must be greater than zero")
+        } else if self
+            .max_pages
+            .checked_mul(self.page_size as usize)
+            .is_none()
         {
-            return Err(GitHubError::InvalidInput(
-                "Invalid collection limits".into(),
-            ));
+            Some("max_pages multiplied by page_size must fit in usize")
+        } else {
+            None
+        };
+        if let Some(message) = invalid {
+            return Err(GitHubError::InvalidInput(message.into()));
         }
         Ok(self)
     }

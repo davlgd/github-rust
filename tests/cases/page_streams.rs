@@ -24,6 +24,56 @@ const COLLECTIONS: [Collection; 3] = [
     Collection::PullRequests,
 ];
 
+#[test]
+fn invalid_collection_limits_identify_the_field() {
+    let client = github_rust::GitHubClient::builder().build().unwrap();
+    for (options, field) in [
+        (
+            FetchOptions {
+                page_size: 0,
+                ..Default::default()
+            },
+            "page_size",
+        ),
+        (
+            FetchOptions {
+                page_size: 101,
+                ..Default::default()
+            },
+            "page_size",
+        ),
+        (
+            FetchOptions {
+                max_pages: 0,
+                ..Default::default()
+            },
+            "max_pages",
+        ),
+        (
+            FetchOptions {
+                max_concurrent_repositories: 0,
+                ..Default::default()
+            },
+            "max_concurrent_repositories",
+        ),
+        (
+            FetchOptions {
+                page_size: 2,
+                max_pages: usize::MAX,
+                ..Default::default()
+            },
+            "max_pages multiplied by page_size",
+        ),
+    ] {
+        let Err(error) = GitHubService::with_client(client.clone()).with_fetch_options(options)
+        else {
+            panic!("accepted invalid {field}");
+        };
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(field));
+    }
+}
+
 fn scopes() -> [RepositoryCoordinates; 1] {
     [RepositoryCoordinates::new("owner", "repo").unwrap()]
 }

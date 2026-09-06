@@ -1,6 +1,6 @@
 use crate::support::client;
 use github_rust::{
-    GitHubError,
+    ErrorKind, GitHubError, GitHubService,
     github::{graphql, rest},
 };
 use serde_json::json;
@@ -169,5 +169,102 @@ async fn not_found_errors_preserve_the_requested_repository() {
         assert!(
             matches!(error, GitHubError::NotFoundError(ref repository) if repository == "owner/repo")
         );
+    }
+}
+
+#[tokio::test]
+async fn forbidden_responses_with_quota_headers_are_rate_limits() {
+    for (header, value) in [("X-RateLimit-Remaining", "0"), ("Retry-After", "30")] {
+        let server = MockServer::start().await;
+        Mock::given(path("/user"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"message": "Forbidden"}))
+                    .insert_header(header, value),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        // UserProfile does not implement Debug, so unwrap_err is unavailable.
+        let Err(error) = rest::get_user_profile(&client(&server, true)).await else {
+            panic!("{header}: expected a rate limit error");
+        };
+        assert!(
+            matches!(error, GitHubError::RateLimitError(_)),
+            "{header}: {error}"
+        );
+        assert_eq!(error.kind(), ErrorKind::RateLimit);
+    }
+}
+
+#[tokio::test]
+async fn blocked_repositories_are_typed_permission_errors() {
+    for (status, message, expected) in [
+        (403, "Repository access blocked", "AccessBlocked"),
+        (
+            451,
+            "Repository access blocked due to a DMCA takedown",
+            "Dmca",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(path("/repos/owner/repo"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({"message": message})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = rest::get_repository_info(&client(&server, false), "owner", "repo")
+            .await
+            .unwrap_err();
+        match expected {
+            "AccessBlocked" => assert!(matches!(error, GitHubError::AccessBlockedError(_))),
+            _ => assert!(matches!(error, GitHubError::DmcaBlockedError(_))),
+        }
+        assert_eq!(error.kind(), ErrorKind::Permission, "{status}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn fallback_errors_classify_the_rest_outcome_and_keep_the_graphql_cause() {
+    let server = MockServer::start().await;
+    Mock::given(path("/graphql"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("Unavailable"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(path("/repos/owner/repo"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = GitHubService::with_client(client(&server, true))
+        .get_repository_info("owner", "repo")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, GitHubError::FallbackError { .. }));
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+    let cause = error.source().unwrap().to_string();
+    assert!(cause.contains("503"), "{cause}");
+}
+
+#[test]
+fn graphql_error_kinds_follow_type_precedence() {
+    fn errors(types: &[&str]) -> GitHubError {
+        GitHubError::GraphQLError(
+            types
+                .iter()
+                .map(|kind| serde_json::from_value(json!({"type": kind, "message": kind})).unwrap())
+                .collect(),
+        )
+    }
+    for (types, expected) in [
+        (&["UNAUTHORIZED", "RATE_LIMITED"][..], ErrorKind::RateLimit),
+        (&["FORBIDDEN", "UNAUTHENTICATED"], ErrorKind::Authentication),
+        (&["NOT_FOUND", "INSUFFICIENT_SCOPES"], ErrorKind::Permission),
+        (&["NOT_FOUND", "NOT_FOUND"], ErrorKind::NotFound),
+        (&["NOT_FOUND", "SOMETHING_ELSE"], ErrorKind::Upstream),
+        (&[], ErrorKind::Upstream),
+    ] {
+        assert_eq!(errors(types).kind(), expected, "{types:?}");
     }
 }

@@ -10,9 +10,11 @@ use wiremock::{
 };
 
 fn page(count: usize, has_next: bool, cursor: Value) -> Value {
+    let mut repository = graphql_repository();
+    repository["licenseInfo"] = json!({"name": "MIT License", "spdxId": "MIT"});
     json!({"data": {"search": {"repositoryCount": 1000,
         "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
-        "edges": (0..count).map(|_| json!({"node": graphql_repository()})).collect::<Vec<_>>()
+        "edges": (0..count).map(|_| json!({"node": repository})).collect::<Vec<_>>()
     }}, "errors": []})
 }
 
@@ -83,6 +85,63 @@ async fn search_quotes_languages_and_requests_only_remaining_results() {
     assert_eq!(repos[0].node_id, "opaque-node-id");
     assert_eq!(repos[0].database_id, Some(1296269));
     assert_eq!(repos[0].topics(), ["rust"]);
+    assert_eq!(repos[0].license_spdx(), Some("MIT"));
+    let serialized = serde_json::to_value(&repos[0]).unwrap();
+    assert_eq!(serialized["license_info"]["spdxId"], "MIT");
+    let restored: github_rust::SearchRepository = serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored.license_spdx(), Some("MIT"));
+}
+
+#[tokio::test]
+async fn search_today_limits_oversized_responses() {
+    let server = MockServer::start().await;
+    let before = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    Mock::given(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(5, true, json!("next"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let repos = search::search_repositories(&client(&server, true), 0, 2, None, 0)
+        .await
+        .unwrap();
+    assert_eq!(repos.len(), 2);
+    let after = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = requests[0].body_json().unwrap();
+    assert_eq!(body["variables"]["first"], 2);
+    let query = body["variables"]["queryString"].as_str().unwrap();
+    assert!(
+        query.contains(&format!("created:>{before}"))
+            || query.contains(&format!("created:>{after}"))
+    );
+}
+
+#[tokio::test]
+async fn starred_repositories_collect_multiple_pages() {
+    let server = MockServer::start().await;
+    for (page, start, end) in [(1, 0, 100), (2, 100, 101)] {
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .and(query_param("page", page.to_string()))
+            .and(query_param("per_page", "100"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    (start..end)
+                        .map(|id| json!({"full_name": format!("owner/repo{id}")}))
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let repos = github_rust::GitHubService::with_client(client(&server, true))
+        .get_user_starred_repositories()
+        .await
+        .unwrap();
+    assert_eq!(repos.len(), 101);
+    assert_eq!(repos[0], "owner/repo0");
+    assert_eq!(repos[100], "owner/repo100");
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@ use std::{error::Error, fmt};
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitDetails {
     pub message: String,
+    /// HTTP status of the response. GraphQL quota errors arrive with HTTP 200.
     pub status: Option<u16>,
     pub resource: Option<String>,
     pub remaining: Option<u64>,
@@ -79,6 +80,10 @@ pub enum GitHubError {
     GraphQLError(Vec<GraphQLError>),
     ParseError(DecodeError),
     ConfigError(String),
+    /// Both attempts of an authenticated repository lookup failed.
+    ///
+    /// `source()` returns the original GraphQL failure; `kind()` classifies the
+    /// final REST outcome. Inspect either field directly when both matter.
     FallbackError {
         graphql: Box<GitHubError>,
         rest: Box<GitHubError>,
@@ -189,6 +194,7 @@ impl GitHubError {
             Self::InvalidInput(_) | Self::ConfigError(_) => ErrorKind::InvalidInput,
             Self::PaginationError(_) => ErrorKind::Pagination,
             Self::Cancelled => ErrorKind::Cancelled,
+            // The REST attempt is the final outcome; source() keeps the GraphQL cause.
             Self::FallbackError { rest, .. } => rest.kind(),
             Self::GraphQLError(errors) => {
                 let has = |types: &[&str]| {

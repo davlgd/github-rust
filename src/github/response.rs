@@ -1,8 +1,23 @@
 //! Shared HTTP and GraphQL response handling.
-use crate::{error::*, github::types::GraphQLResponse};
+use crate::{GitHubClient, error::*, github::types::GraphQLResponse};
 use reqwest::{Response, header::HeaderMap};
 use serde::de::DeserializeOwned;
+use serde_json::json;
 
+pub(crate) async fn query<T: serde::de::DeserializeOwned>(
+    client: &GitHubClient,
+    query: &str,
+    variables: serde_json::Value,
+) -> Result<T> {
+    graphql(
+        client
+            .post(client.graphql_url())
+            .json(&json!({"query": query, "variables": variables}))
+            .send()
+            .await?,
+    )
+    .await
+}
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)

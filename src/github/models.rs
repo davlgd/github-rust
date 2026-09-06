@@ -12,8 +12,11 @@ pub struct Repository {
     pub description: Option<String>,
     pub url: String,
     pub homepage_url: Option<String>,
+    /// Creation timestamp supplied by GitHub, in ISO 8601 format.
     pub created_at: String,
+    /// Last metadata update timestamp, in ISO 8601 format.
     pub updated_at: String,
+    /// Last push timestamp in ISO 8601 format, when available.
     pub pushed_at: Option<String>,
     pub is_private: bool,
     pub is_fork: bool,
@@ -55,8 +58,11 @@ pub struct SearchRepository {
     pub url: String,
     pub stargazer_count: u32,
     pub fork_count: u32,
+    /// Creation timestamp supplied by GitHub, in ISO 8601 format.
     pub created_at: String,
+    /// Last metadata update timestamp, in ISO 8601 format.
     pub updated_at: String,
+    /// Last push timestamp in ISO 8601 format, when available.
     pub pushed_at: Option<String>,
     pub primary_language: Option<Language>,
     pub license_info: Option<License>,
@@ -86,9 +92,8 @@ macro_rules! repository_helpers {
             }
             pub fn owner(&self) -> &str {
                 self.name_with_owner
-                    .split('/')
-                    .next()
-                    .unwrap_or(&self.name_with_owner)
+                    .split_once('/')
+                    .map_or(self.name_with_owner.as_str(), |(owner, _)| owner)
             }
         }
     };

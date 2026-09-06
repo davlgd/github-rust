@@ -30,6 +30,7 @@ pub struct Language {
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct License {
     pub name: String,
+    /// Serialized as `spdxId`, retaining the shared GraphQL license format.
     #[serde(rename = "spdxId")]
     pub spdx_id: Option<String>,
 }
