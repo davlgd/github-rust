@@ -92,9 +92,39 @@ These methods require a token. Empty repository batches return an empty list wit
 Repository inventories include visible private repositories, forks and archives.
 For batch calls, select repositories in your application and convert them with `RepositorySummary::coordinates()`.
 
-### Progress
+### Page streams
 
-Use `get_open_issues_with_progress()` or `get_open_pull_requests_with_progress()` to process pages as they arrive:
+Process results incrementally with page streams:
+
+| Method | Page type |
+| --- | --- |
+| `get_owned_repository_pages(login)` | `RepositoryPage` |
+| `get_open_issue_pages(scopes)` | `WorkItemPage<Issue>` |
+| `get_open_pull_request_pages(scopes)` | `WorkItemPage<PullRequest>` |
+
+```rust
+use futures_util::TryStreamExt;
+use std::pin::pin;
+
+async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+    let mut pages = pin!(service.get_owned_repository_pages("rust-lang"));
+    while let Some(page) = pages.try_next().await? {
+        println!("Received {} repositories", page.repositories.len());
+    }
+    Ok(())
+}
+```
+
+- Streams are `Send + 'static` and own their client and scope. Add `futures-util = "0.3"` to use `TryStreamExt`.
+- Each page transfers to the caller without cloning its contents or buffering the full result. Traversal retains IDs and cursors for consistency checks.
+- Requests advance when the stream is polled. Dropping it cancels traversal; the first error ends it.
+- Validation errors are stream items. Pages arrive in API/completion order and remain provisional until the entire stream finishes successfully.
+
+See [page_streams.rs](examples/page_streams.rs) for processing pages in a Tokio task.
+
+### Callbacks
+
+Use `get_owned_repositories_with_progress()`, `get_open_issues_with_progress()` or `get_open_pull_requests_with_progress()` to receive borrowed pages and a final collected result:
 
 ```rust
 async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
@@ -114,17 +144,6 @@ async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()
 - Use `get_open_*_for_repositories()` when you only need the final list.
 
 See [account_overview.rs](examples/account_overview.rs) for account discovery, repository filtering and batch calls.
-
-### Send callbacks
-
-Generic adapters using `async |page|` can encounter `Send is not general enough` when passed to `tokio::spawn` ([#3](https://github.com/davlgd/github-rust/issues/3)).
-
-Use `async move |page|` to capture the generic callback by value, and give that callback owned state (`Arc` for shared state).
-The [Send adapter example](examples/send_progress.rs) shows the bounds and a Tokio task.
-
-A normal `move` closure returning an explicitly typed `Pin<Box<dyn Future<Output = Result<()>> + Send>>` also works for owned callback futures.
-
-That adapter clones pages because its callback accepts owned data. Ordinary borrowed progress callbacks remain available without those copies.
 
 ### Limits
 

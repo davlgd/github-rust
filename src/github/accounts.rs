@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{GitHubClient, GitHubError, Result};
 use chrono::{DateTime, Utc};
+use futures_util::{Stream, TryStreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -197,17 +198,11 @@ pub(crate) async fn viewer(client: &GitHubClient, options: FetchOptions) -> Resu
     }
     Ok(result.expect("at least one page"))
 }
-pub(crate) async fn repositories<F>(
-    client: &GitHubClient,
-    login: &str,
+pub(crate) fn repository_pages(
+    client: GitHubClient,
+    login: String,
     options: FetchOptions,
-    mut progress: Option<F>,
-) -> Result<OwnedRepositories>
-where
-    F: AsyncFnMut(&RepositoryPage) -> Result<()>,
-{
-    validate_owner(login)?;
-    require_token(client)?;
+) -> impl Stream<Item = Result<RepositoryPage>> + Send {
     #[derive(Deserialize)]
     struct Data {
         #[serde(rename = "repositoryOwner")]
@@ -219,59 +214,81 @@ where
         account: AccountDto,
         repositories: Connection<RepositoryDto>,
     }
-    let mut tracker = Tracker::default();
+    stream::try_unfold(
+        (client, login, Tracker::default(), None::<Account>, false),
+        move |(client, login, mut tracker, previous, done)| async move {
+            if done {
+                return Ok(None);
+            }
+            validate_owner(&login)?;
+            require_token(&client)?;
+            let data: Data = query(
+                &client,
+                include_str!("queries/repositories.graphql"),
+                json!({"login": login, "first": options.page_size, "cursor": tracker.cursor}),
+            )
+            .await?;
+            let owner = data
+                .owner
+                .ok_or_else(|| GitHubError::NotFoundError(login.clone()))?;
+            let account: Account = owner.account.into();
+            if account.node_id.is_empty()
+                || !account.login.eq_ignore_ascii_case(&login)
+                || previous.as_ref().is_some_and(|owner| {
+                    owner.node_id != account.node_id || owner.login != account.login
+                })
+                || owner.repositories.nodes.iter().any(|r| {
+                    !r.name_with_owner
+                        .eq_ignore_ascii_case(&format!("{}/{}", account.login, r.name))
+                })
+            {
+                return Err(GitHubError::PaginationError(
+                    "Repository owner changed during pagination".into(),
+                ));
+            }
+            tracker.accept(&owner.repositories, options, |r| &r.id)?;
+            let page = RepositoryPage {
+                owner: account.clone(),
+                total_count: owner.repositories.total_count,
+                has_next_page: owner.repositories.page_info.has_next_page,
+                repositories: owner
+                    .repositories
+                    .nodes
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            };
+            let done = tracker.cursor.is_none();
+            Ok(Some((page, (client, login, tracker, Some(account), done))))
+        },
+    )
+}
+
+pub(crate) async fn repositories<F>(
+    client: &GitHubClient,
+    login: &str,
+    options: FetchOptions,
+    mut progress: Option<F>,
+) -> Result<OwnedRepositories>
+where
+    F: AsyncFnMut(&RepositoryPage) -> Result<()>,
+{
+    let pages = repository_pages(client.clone(), login.to_owned(), options);
+    futures_util::pin_mut!(pages);
     let mut result: Option<OwnedRepositories> = None;
-    loop {
-        let data: Data = query(
-            client,
-            include_str!("queries/repositories.graphql"),
-            json!({"login": login, "first": options.page_size, "cursor": tracker.cursor}),
-        )
-        .await?;
-        let owner = data
-            .owner
-            .ok_or_else(|| GitHubError::NotFoundError(login.into()))?;
-        let account: Account = owner.account.into();
-        if account.node_id.is_empty()
-            || !account.login.eq_ignore_ascii_case(login)
-            || result.as_ref().is_some_and(|r| {
-                r.owner.node_id != account.node_id || r.owner.login != account.login
-            })
-            || owner.repositories.nodes.iter().any(|r| {
-                !r.name_with_owner
-                    .eq_ignore_ascii_case(&format!("{}/{}", account.login, r.name))
-            })
-        {
-            return Err(GitHubError::PaginationError(
-                "Repository owner changed during pagination".into(),
-            ));
-        }
-        tracker.accept(&owner.repositories, options, |r| &r.id)?;
-        let page = RepositoryPage {
-            owner: account.clone(),
-            total_count: owner.repositories.total_count,
-            has_next_page: owner.repositories.page_info.has_next_page,
-            repositories: owner
-                .repositories
-                .nodes
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        };
-        let result = result.get_or_insert_with(|| OwnedRepositories {
-            owner: account,
-            repositories: vec![],
-        });
+    while let Some(page) = pages.try_next().await? {
         if let Some(callback) = &mut progress {
             callback(&page).await?;
         }
+        let result = result.get_or_insert_with(|| OwnedRepositories {
+            owner: page.owner,
+            repositories: vec![],
+        });
         result.repositories.extend(page.repositories);
-        if tracker.cursor.is_none() {
-            result
-                .repositories
-                .sort_by(|a, b| a.name_with_owner.cmp(&b.name_with_owner));
-            break;
-        }
     }
-    Ok(result.expect("at least one page"))
+    let mut result = result.expect("at least one page");
+    result
+        .repositories
+        .sort_by(|a, b| a.name_with_owner.cmp(&b.name_with_owner));
+    Ok(result)
 }

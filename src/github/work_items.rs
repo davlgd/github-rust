@@ -5,10 +5,13 @@ use super::{
 };
 use crate::{GitHubClient, GitHubError, Result};
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use futures_util::{
+    Stream, StreamExt, TryStreamExt,
+    stream::{self, FuturesUnordered},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 /// Explicit scope for collection calls. All scopes are validated before sending requests.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,13 +75,14 @@ pub enum ReviewDecision {
     ReviewRequired,
 }
 
-/// A validated repository page; callbacks across repositories arrive in completion order.
-/// Only successful completion of the entire call certifies traversal of all scopes.
+/// A validated repository page; pages across repositories arrive in completion order.
+/// Only successful completion of the entire traversal certifies all scopes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItemPage<T> {
     pub repository: RepositoryReference,
     pub items: Vec<T>,
     pub total_count: usize,
+    /// Whether this repository has more pages; other scopes may still be incomplete.
     pub has_next_page: bool,
 }
 
@@ -148,7 +152,7 @@ impl<T> Metadata<T> {
         Ok(self.nodes)
     }
 }
-pub(crate) trait Item: Sized {
+pub(crate) trait Item: Sized + Send {
     const ISSUES: bool;
     fn from_wire(node: NodeDto, repository: &RepositoryReference) -> Result<Self>;
     fn id(&self) -> &str;
@@ -215,7 +219,7 @@ struct Traversal {
     tracker: Tracker,
 }
 async fn next_page<T: Item>(
-    client: &GitHubClient,
+    client: Arc<GitHubClient>,
     options: FetchOptions,
     mut traversal: Traversal,
 ) -> Result<(Traversal, WorkItemPage<T>)> {
@@ -235,7 +239,7 @@ async fn next_page<T: Item>(
     }
     let scope = &traversal.scope;
     let data: Data = query(
-        client,
+        &client,
         include_str!("queries/work_items.graphql"),
         json!({
             "owner": scope.owner, "name": scope.name, "cursor": traversal.tracker.cursor,
@@ -291,6 +295,66 @@ async fn next_page<T: Item>(
     ))
 }
 
+pub(crate) fn pages<T: Item>(
+    client: GitHubClient,
+    scopes: Vec<RepositoryCoordinates>,
+    options: FetchOptions,
+) -> impl Stream<Item = Result<WorkItemPage<T>>> + Send {
+    stream::once(async move {
+        // Share the owned client across in-flight requests without copying its token.
+        let client = Arc::new(client);
+        let mut names = HashSet::new();
+        for scope in &scopes {
+            scope.validate()?;
+            if !names.insert(format!("{}/{}", scope.owner, scope.name).to_ascii_lowercase()) {
+                return Err(GitHubError::InvalidInput(
+                    "Duplicate repository scope".into(),
+                ));
+            }
+        }
+        if !scopes.is_empty() {
+            require_token(&client)?;
+        }
+        let mut scopes = scopes.into_iter().map(|scope| Traversal {
+            scope,
+            identity: None,
+            tracker: Tracker::default(),
+        });
+        let pending = FuturesUnordered::new();
+        for traversal in scopes.by_ref().take(options.max_concurrent_repositories) {
+            pending.push(next_page::<T>(client.clone(), options, traversal));
+        }
+        Ok(stream::try_unfold(
+            (scopes, pending, HashSet::new()),
+            move |(mut scopes, mut pending, mut ids)| {
+                let client = client.clone();
+                async move {
+                    let Some(page) = pending.next().await else {
+                        return Ok(None);
+                    };
+                    let (traversal, page) = page?;
+                    for item in &page.items {
+                        if !ids.insert(item.id().to_owned()) {
+                            return Err(GitHubError::PaginationError(
+                                "Work item appeared in multiple repository scopes".into(),
+                            ));
+                        }
+                    }
+                    // These futures stay unpolled until the consumer requests another page.
+                    // Dropping the stream also drops every pending request.
+                    if traversal.tracker.cursor.is_some() {
+                        pending.push(next_page::<T>(client, options, traversal));
+                    } else if let Some(next) = scopes.next() {
+                        pending.push(next_page::<T>(client, options, next));
+                    }
+                    Ok(Some((page, (scopes, pending, ids))))
+                }
+            },
+        ))
+    })
+    .try_flatten()
+}
+
 pub(crate) async fn collect<T, F>(
     client: &GitHubClient,
     scopes: &[RepositoryCoordinates],
@@ -301,50 +365,14 @@ where
     T: Item,
     F: AsyncFnMut(&WorkItemPage<T>) -> Result<()>,
 {
-    let mut names = HashSet::new();
-    for scope in scopes {
-        scope.validate()?;
-        if !names.insert(format!("{}/{}", scope.owner, scope.name).to_ascii_lowercase()) {
-            return Err(GitHubError::InvalidInput(
-                "Duplicate repository scope".into(),
-            ));
-        }
-    }
-    if scopes.is_empty() {
-        return Ok(vec![]);
-    }
-    require_token(client)?;
-    let mut scopes = scopes.iter().cloned().map(|scope| Traversal {
-        scope,
-        identity: None,
-        tracker: Tracker::default(),
-    });
-    let mut pending = FuturesUnordered::new();
-    for traversal in scopes.by_ref().take(options.max_concurrent_repositories) {
-        pending.push(next_page::<T>(client, options, traversal));
-    }
+    let pages = pages::<T>(client.clone(), scopes.to_vec(), options);
+    futures_util::pin_mut!(pages);
     let mut result = vec![];
-    let mut ids = HashSet::new();
-    while let Some(page) = pending.next().await {
-        let (traversal, page) = page?;
-        for item in &page.items {
-            if !ids.insert(item.id().to_owned()) {
-                return Err(GitHubError::PaginationError(
-                    "Work item appeared in multiple repository scopes".into(),
-                ));
-            }
-        }
+    while let Some(page) = pages.try_next().await? {
         if let Some(callback) = &mut progress {
             callback(&page).await?;
         }
         result.extend(page.items);
-        // No spawned tasks: callback backpressure stops polling requests, and dropping
-        // this future cancels all pending traversal, including on any callback error.
-        if traversal.tracker.cursor.is_some() {
-            pending.push(next_page::<T>(client, options, traversal));
-        } else if let Some(next) = scopes.next() {
-            pending.push(next_page::<T>(client, options, next));
-        }
     }
     result.sort_by(|a: &T, b| {
         b.updated()

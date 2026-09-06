@@ -387,6 +387,35 @@ impl GitHubService {
         super::accounts::viewer(&self.client, self.fetch_options).await
     }
 
+    /// Stream validated, owned repository pages without buffering the inventory.
+    ///
+    /// The stream owns its client and login and is `Send + 'static`. Requests start
+    /// when polled; dropping the stream cancels traversal. An error ends the stream.
+    /// Pages are provisional until the stream ends successfully, and are not sorted.
+    /// Validation and authentication errors are returned as stream items.
+    ///
+    /// ```no_run
+    /// use futures_util::TryStreamExt;
+    /// use std::pin::pin;
+    ///
+    /// # async fn example(service: &github_rust::GitHubService) -> github_rust::Result<()> {
+    /// let mut pages = pin!(service.get_owned_repository_pages("rust-lang"));
+    /// while let Some(page) = pages.try_next().await? {
+    ///     for repository in page.repositories {
+    ///         println!("{}", repository.name_with_owner);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_owned_repository_pages(
+        &self,
+        login: &str,
+    ) -> impl futures_util::Stream<Item = Result<super::RepositoryPage>> + Send + 'static + use<>
+    {
+        super::accounts::repository_pages(self.client.clone(), login.to_owned(), self.fetch_options)
+    }
+
     /// List repositories owned by a user or organization, including visible private,
     /// forked and archived repositories. Results are sorted by full name.
     pub async fn get_owned_repositories(&self, login: &str) -> Result<super::OwnedRepositories> {
@@ -405,33 +434,7 @@ impl GitHubService {
     /// the returned future cancels traversal; no background tasks are spawned.
     /// GitHub does not provide a transactional snapshot across pages.
     ///
-    /// # Send adapters
-    ///
-    /// Generic adapters using async closures can hit Rust's `Send` inference
-    /// limitation when borrowing the callback. Capture it by value with `async move`
-    /// and give the callback owned state (for example, `Arc` for shared state).
-    /// This example forwards owned pages, so it clones at that boundary:
-    ///
-    /// ```no_run
-    /// use github_rust::{GitHubService, RepositoryPage, Result};
-    /// use std::future::Future;
-    ///
-    /// async fn collect<F, Fut>(service: &GitHubService, mut progress: F) -> Result<()>
-    /// where
-    ///     F: FnMut(RepositoryPage) -> Fut + Send,
-    ///     Fut: Future<Output = Result<()>> + Send,
-    /// {
-    ///     service.get_owned_repositories_with_progress(
-    ///         "owner",
-    ///         async move |page| { progress(page.clone()).await },
-    ///     ).await?;
-    ///     Ok(())
-    /// }
-    /// # fn assert_send(_: impl Future<Output = Result<()>> + Send) {}
-    /// # fn check(service: &GitHubService) {
-    /// #     assert_send(collect(service, |_| async { Ok(()) }));
-    /// # }
-    /// ```
+    /// For a `Send` stream of owned pages, use [`Self::get_owned_repository_pages`].
     pub async fn get_owned_repositories_with_progress<F>(
         &self,
         login: &str,
@@ -445,6 +448,28 @@ impl GitHubService {
 }
 
 impl GitHubService {
+    /// Stream validated, owned issue pages across explicit repository scopes.
+    ///
+    /// Scopes are validated before any request. Empty scopes need no token.
+    /// Pages arrive in completion order with bounded repository concurrency;
+    /// requests advance only while the stream is polled. An error ends traversal.
+    /// The stream is `Send + 'static`; dropping it cancels pending requests.
+    /// Pages remain provisional until all scopes finish successfully.
+    /// See [`Self::get_owned_repository_pages`] for a page-processing example.
+    pub fn get_open_issue_pages(
+        &self,
+        repositories: &[super::RepositoryCoordinates],
+    ) -> impl futures_util::Stream<Item = Result<super::WorkItemPage<super::Issue>>>
+    + Send
+    + 'static
+    + use<> {
+        super::work_items::pages(
+            self.client.clone(),
+            repositories.to_vec(),
+            self.fetch_options,
+        )
+    }
+
     /// Fetch every open work item in one repository, sorted by update time descending.
     pub async fn get_open_issues(&self, owner: &str, name: &str) -> Result<Vec<super::Issue>> {
         self.get_open_issues_for_repositories(&[super::RepositoryCoordinates::new(owner, name)?])
@@ -471,9 +496,7 @@ impl GitHubService {
     /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
     /// their embedded 100-node pages, otherwise this returns a pagination error.
     /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
-    /// For generic adapters requiring `Send`, see the `async move` adapter example on
-    /// [`Self::get_owned_repositories_with_progress`]. Here callbacks receive
-    /// `&WorkItemPage<Issue>`.
+    /// For a `Send` stream of owned pages, use [`Self::get_open_issue_pages`].
     pub async fn get_open_issues_with_progress<F>(
         &self,
         repositories: &[super::RepositoryCoordinates],
@@ -493,6 +516,25 @@ impl GitHubService {
 }
 
 impl GitHubService {
+    /// Stream validated, owned pull-request pages across explicit repository scopes.
+    ///
+    /// Has the same ordering, validation and cancellation guarantees as
+    /// [`Self::get_open_issue_pages`]. The stream is `Send + 'static` and does not
+    /// borrow the service or the repository scopes.
+    pub fn get_open_pull_request_pages(
+        &self,
+        repositories: &[super::RepositoryCoordinates],
+    ) -> impl futures_util::Stream<Item = Result<super::WorkItemPage<super::PullRequest>>>
+    + Send
+    + 'static
+    + use<> {
+        super::work_items::pages(
+            self.client.clone(),
+            repositories.to_vec(),
+            self.fetch_options,
+        )
+    }
+
     /// Fetch every open work item in one repository, sorted by update time descending.
     pub async fn get_open_pull_requests(
         &self,
@@ -525,9 +567,7 @@ impl GitHubService {
     /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
     /// their embedded 100-node pages, otherwise this returns a pagination error.
     /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
-    /// For generic adapters requiring `Send`, see the `async move` adapter example on
-    /// [`Self::get_owned_repositories_with_progress`]. Here callbacks receive
-    /// `&WorkItemPage<PullRequest>`.
+    /// For a `Send` stream of owned pages, use [`Self::get_open_pull_request_pages`].
     pub async fn get_open_pull_requests_with_progress<F>(
         &self,
         repositories: &[super::RepositoryCoordinates],
