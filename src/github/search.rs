@@ -69,8 +69,12 @@ fn validate_language(language: &str) -> Option<String> {
 /// containing the most commonly needed fields.
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub struct SearchRepository {
-    /// GitHub's internal ID for the repository
-    pub id: String,
+    /// Opaque global node ID, shared by the REST and GraphQL APIs.
+    #[serde(rename = "id")]
+    pub node_id: String,
+    /// Numeric database ID, when supplied by GitHub.
+    #[serde(rename = "databaseId")]
+    pub database_id: Option<u64>,
     /// Repository name (without owner)
     pub name: String,
     /// Full repository name in "owner/repo" format

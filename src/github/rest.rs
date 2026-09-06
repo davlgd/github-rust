@@ -13,6 +13,7 @@ fn encode_path_segment(segment: &str) -> String {
 #[derive(Deserialize)]
 struct RestRepository {
     id: u64,
+    node_id: String,
     name: String,
     full_name: String,
     description: Option<String>,
@@ -350,7 +351,8 @@ fn convert_rest_to_graphql(rest: RestRepository, lang_stats: LanguageStats) -> G
     };
 
     GraphQLRepository {
-        id: rest.id.to_string(),
+        node_id: rest.node_id,
+        database_id: Some(rest.id),
         name: rest.name,
         name_with_owner: rest.full_name,
         description: rest.description,

@@ -10,6 +10,7 @@ pub const GRAPHQL_REPOSITORY_QUERY: &str = r#"
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     id
+    databaseId
     name
     nameWithOwner
     description
@@ -80,6 +81,7 @@ query($queryString: String!, $first: Int!, $after: String) {
       node {
         ... on Repository {
           id
+          databaseId
           name
           nameWithOwner
           description

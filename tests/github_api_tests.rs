@@ -48,7 +48,8 @@ fn test_repository_parsing() {
 fn test_search_repository_default() {
     // Test that SearchRepository can be created with Default
     let repo = SearchRepository::default();
-    assert_eq!(repo.id, "");
+    assert_eq!(repo.node_id, "");
+    assert_eq!(repo.database_id, None);
     assert_eq!(repo.name, "");
     assert_eq!(repo.stargazer_count, 0);
     assert_eq!(repo.fork_count, 0);
