@@ -69,6 +69,7 @@ pub enum GitHubError {
     AccessBlockedError(String),
     DmcaBlockedError(String),
     InvalidInput(String),
+    PaginationError(String),
     ApiError { status: u16, message: String },
     GraphQLError(Vec<GraphQLError>),
     ParseError(DecodeError),
@@ -87,6 +88,7 @@ impl fmt::Display for GitHubError {
             Self::DmcaBlockedError(message) => {
                 write!(f, "Unavailable for legal reasons: {message}")
             }
+            Self::PaginationError(message) => write!(f, "Pagination error: {message}"),
             Self::InvalidInput(message) => write!(f, "Invalid input: {message}"),
             Self::ApiError { status, message } => write!(f, "GitHub API error {status}: {message}"),
             Self::GraphQLError(errors) => write!(

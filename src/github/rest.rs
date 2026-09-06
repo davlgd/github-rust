@@ -120,12 +120,9 @@ pub async fn get_user_starred_repositories(client: &GitHubClient) -> Result<Vec<
     loop {
         // Safety limit to prevent infinite loops or excessive API calls
         if page > MAX_STARRED_PAGES {
-            tracing::warn!(
-                "Reached maximum page limit ({}) for starred repositories. Returning {} repositories.",
-                MAX_STARRED_PAGES,
-                all_starred.len()
-            );
-            break;
+            return Err(GitHubError::PaginationError(
+                "Starred repositories exceed the 100-page safety limit".into(),
+            ));
         }
         let starred_url = format!(
             "{}/user/starred?per_page={}&page={}",
@@ -166,6 +163,11 @@ pub async fn get_repository_stargazers(
 ) -> Result<Vec<StargazerWithDate>> {
     let per_page = per_page.unwrap_or(30).min(100); // GitHub max is 100
     let page = page.unwrap_or(1);
+    if per_page == 0 || page == 0 {
+        return Err(GitHubError::InvalidInput(
+            "page and per_page must be greater than zero".into(),
+        ));
+    }
 
     let encoded_owner = encode_path_segment(owner);
     let encoded_name = encode_path_segment(name);
@@ -285,38 +287,5 @@ mod tests {
         assert_eq!(stargazers[0].user.login, "testuser");
         assert_eq!(stargazers[0].user.id, 12345);
         assert!(!stargazers[0].user.site_admin);
-    }
-
-    #[test]
-    fn test_pagination_parameters() {
-        // Test that pagination parameters are validated correctly
-        fn apply_limit(per_page: u32) -> u32 {
-            per_page.min(100)
-        }
-
-        assert_eq!(apply_limit(50), 50);
-        assert_eq!(apply_limit(150), 100);
-        assert_eq!(apply_limit(30), 30);
-    }
-
-    #[test]
-    fn test_stargazers_url_construction() {
-        let owner = "microsoft";
-        let name = "vscode";
-        let per_page = 30;
-        let page = 1;
-
-        let expected_url = format!(
-            "{}/repos/{}/{}/stargazers?per_page={}&page={}",
-            crate::config::GITHUB_API_URL,
-            owner,
-            name,
-            per_page,
-            page
-        );
-
-        assert!(expected_url.contains("microsoft/vscode/stargazers"));
-        assert!(expected_url.contains("per_page=30"));
-        assert!(expected_url.contains("page=1"));
     }
 }

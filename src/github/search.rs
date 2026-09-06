@@ -3,7 +3,7 @@ use crate::github::types::*;
 use crate::{config::*, error::*};
 use chrono::{Duration, Utc};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Validates and sanitizes a language parameter for GitHub search.
 /// Returns None if the language is invalid, Some(sanitized) otherwise.
@@ -23,41 +23,6 @@ fn validate_language(language: &str) -> Option<String> {
 
     if !is_valid {
         return None;
-    }
-
-    // Reject if it looks like a search operator injection attempt
-    let lower = trimmed.to_lowercase();
-    let suspicious_patterns = [
-        "repo:",
-        "user:",
-        "org:",
-        "in:",
-        "size:",
-        "fork:",
-        "stars:",
-        "pushed:",
-        "created:",
-        "updated:",
-        "language:",
-        "topic:",
-        "license:",
-        "is:",
-        "has:",
-        "good-first-issues:",
-        "help-wanted-issues:",
-        "archived:",
-        "mirror:",
-        "template:",
-        "sort:",
-        " or ",
-        " and ",
-        " not ",
-    ];
-
-    for pattern in suspicious_patterns {
-        if lower.contains(pattern) {
-            return None;
-        }
     }
 
     Some(trimmed.to_string())
@@ -174,8 +139,15 @@ pub async fn search_repositories(
     language: Option<&str>,
     min_stars: u32,
 ) -> Result<Vec<SearchRepository>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
     let now = Utc::now();
-    let days_ago = now - Duration::days(days_back as i64);
+    let days_ago = now
+        .checked_sub_signed(Duration::days(i64::from(days_back)))
+        .ok_or_else(|| {
+            GitHubError::InvalidInput("days_back exceeds the supported date range".into())
+        })?;
     let date_filter = days_ago.format("%Y-%m-%d").to_string();
 
     let mut query_parts = vec![
@@ -187,7 +159,7 @@ pub async fn search_repositories(
 
     if let Some(lang) = language {
         if let Some(validated_lang) = validate_language(lang) {
-            query_parts.push(format!("language:{}", validated_lang));
+            query_parts.push(format!("language:\"{}\"", validated_lang));
         } else {
             return Err(GitHubError::InvalidInput(format!(
                 "Invalid language parameter: '{}'. Language must contain only alphanumeric characters, spaces, hyphens, plus signs, hash, or dots.",
@@ -196,12 +168,18 @@ pub async fn search_repositories(
         }
     }
 
+    if !client.has_token() {
+        return Err(GitHubError::AuthenticationError(
+            "Repository search requires a GitHub token".into(),
+        ));
+    }
     let query_string = query_parts.join(" ");
     tracing::debug!("GitHub search query: {}", query_string);
 
     let mut all_repositories = Vec::new();
     let mut after_cursor: Option<String> = None;
     let max_total = limit.min(1000);
+    let mut seen_cursors = HashSet::new();
 
     loop {
         let mut variables = HashMap::new();
@@ -211,7 +189,9 @@ pub async fn search_repositories(
         );
         variables.insert(
             "first".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(100)),
+            serde_json::Value::Number(serde_json::Number::from(
+                (max_total - all_repositories.len()).min(100),
+            )),
         );
 
         if let Some(cursor) = &after_cursor {
@@ -235,10 +215,28 @@ pub async fn search_repositories(
             .await?;
 
         let data: SearchResult = super::response::graphql(response).await?;
-        let page_repositories = data.search.edges.into_iter().map(|edge| edge.node.into());
+        let page_is_empty = data.search.edges.is_empty();
+        let page_repositories = data
+            .search
+            .edges
+            .into_iter()
+            .map(|edge| SearchRepository::from(edge.node));
         all_repositories.extend(page_repositories);
         if data.search.page_info.has_next_page && all_repositories.len() < max_total {
-            after_cursor = data.search.page_info.end_cursor;
+            let cursor = data
+                .search
+                .page_info
+                .end_cursor
+                .filter(|cursor| !cursor.is_empty())
+                .ok_or_else(|| {
+                    GitHubError::PaginationError("hasNextPage without endCursor".into())
+                })?;
+            if page_is_empty || !seen_cursors.insert(cursor.clone()) {
+                return Err(GitHubError::PaginationError(
+                    "Search pagination made no progress".into(),
+                ));
+            }
+            after_cursor = Some(cursor);
         } else {
             break;
         }

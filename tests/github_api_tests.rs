@@ -2,6 +2,8 @@
 mod errors;
 #[path = "cases/repository.rs"]
 mod repository;
+#[path = "cases/search.rs"]
+mod search;
 mod support;
 
 use github_rust::{GitHubService, SearchRepository, StargazerWithDate, User};
