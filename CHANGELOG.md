@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.3
+
+- Treat empty or whitespace-only `GITHUB_TOKEN` values as anonymous access; explicitly supplied empty builder tokens remain invalid.
+- Clarify authentication, REST fallback, quota errors, JSON license keys and collection limits in the documentation.
+- Simplify private GraphQL request construction and response models, remove redundant tests and expand configuration, error and pagination coverage.
+- Add monthly dependency update checks for Cargo and GitHub Actions.
+
 ## v0.2.2
 
 - Add lazy `Send` streams of owned repository, issue and pull-request pages.
