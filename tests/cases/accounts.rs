@@ -61,6 +61,29 @@ async fn viewer_paginates_all_organizations() {
     );
 }
 #[tokio::test]
+async fn viewer_identity_changes_between_pages_are_rejected() {
+    for field in ["id", "login"] {
+        let server = MockServer::start().await;
+        let organization = |login: &str| json!({"id":format!("O_{login}"),"login":login,"name":null,"avatarUrl":login});
+        let mut viewer = account();
+        viewer["organizations"] = connection(vec![organization("a")], 2, Some("next"));
+        mount(&server, None, json!({"data":{"viewer":viewer}})).await;
+        let mut viewer = account();
+        viewer[field] = json!("changed");
+        viewer["organizations"] = connection(vec![organization("b")], 2, None);
+        mount(&server, Some("next"), json!({"data":{"viewer":viewer}})).await;
+        let error = GitHubService::with_client(client(&server, true))
+            .get_viewer()
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Pagination, "{field}: {error}");
+        assert!(
+            error.to_string().contains("Viewer changed"),
+            "{field}: {error}"
+        );
+    }
+}
+#[tokio::test]
 async fn owned_repositories_stream_over_one_hundred_without_losing_metadata() {
     let server = MockServer::start().await;
     for (cursor, nodes, next) in [

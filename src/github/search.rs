@@ -3,7 +3,8 @@ use crate::github::types::*;
 use crate::{config::*, error::*};
 use chrono::{Duration, Utc};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use serde_json::json;
+use std::collections::HashSet;
 
 /// Validates and sanitizes a language parameter for GitHub search.
 /// Returns None if the language is invalid, Some(sanitized) otherwise.
@@ -30,51 +31,24 @@ fn validate_language(language: &str) -> Option<String> {
 
 pub use crate::github::models::SearchRepository;
 
-/// Repository data from GitHub search API.
-///
-/// A lighter-weight repository struct returned by search operations,
-/// containing the most commonly needed fields.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphQLSearchRepository {
-    /// Opaque global node ID, shared by the REST and GraphQL APIs.
     #[serde(rename = "id")]
-    pub node_id: String,
-    /// Numeric database ID, when supplied by GitHub.
-    #[serde(rename = "databaseId")]
-    pub database_id: Option<u64>,
-    /// Repository name (without owner)
-    pub name: String,
-    /// Full repository name in "owner/repo" format
-    #[serde(rename = "nameWithOwner")]
-    pub name_with_owner: String,
-    /// Repository description
-    pub description: Option<String>,
-    /// GitHub URL for the repository
-    pub url: String,
-    /// Number of stars
-    #[serde(rename = "stargazerCount")]
-    pub stargazer_count: u32,
-    /// Number of forks
-    #[serde(rename = "forkCount")]
-    pub fork_count: u32,
-    /// ISO 8601 timestamp when repository was created
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
-    /// ISO 8601 timestamp of last update
-    #[serde(rename = "updatedAt")]
-    pub updated_at: String,
-    /// ISO 8601 timestamp of last push
-    #[serde(rename = "pushedAt")]
-    pub pushed_at: Option<String>,
-    /// Primary programming language
-    #[serde(rename = "primaryLanguage")]
-    pub primary_language: Option<Language>,
-    /// License information
-    #[serde(rename = "licenseInfo")]
-    pub license_info: Option<License>,
-    /// Repository topics/tags
-    #[serde(rename = "repositoryTopics")]
-    pub repository_topics: TopicConnection,
+    node_id: String,
+    database_id: Option<u64>,
+    name: String,
+    name_with_owner: String,
+    description: Option<String>,
+    url: String,
+    stargazer_count: u32,
+    fork_count: u32,
+    created_at: String,
+    updated_at: String,
+    pushed_at: Option<String>,
+    primary_language: Option<Language>,
+    license_info: Option<License>,
+    repository_topics: TopicConnection,
 }
 
 impl From<GraphQLSearchRepository> for SearchRepository {
@@ -118,9 +92,6 @@ struct PageInfo {
 
 #[derive(Deserialize)]
 struct SearchConnection {
-    #[serde(rename = "repositoryCount")]
-    #[allow(dead_code)]
-    repository_count: u32,
     #[serde(rename = "pageInfo")]
     page_info: PageInfo,
     edges: Vec<SearchEdge>,
@@ -182,39 +153,16 @@ pub async fn search_repositories(
     let mut seen_cursors = HashSet::new();
 
     loop {
-        let mut variables = HashMap::new();
-        variables.insert(
-            "queryString".to_string(),
-            serde_json::Value::String(query_string.clone()),
-        );
-        variables.insert(
-            "first".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(
-                (max_total - all_repositories.len()).min(100),
-            )),
-        );
-
-        if let Some(cursor) = &after_cursor {
-            variables.insert(
-                "after".to_string(),
-                serde_json::Value::String(cursor.clone()),
-            );
-        } else {
-            variables.insert("after".to_string(), serde_json::Value::Null);
-        }
-
-        let graphql_query: GraphQLQuery<HashMap<String, serde_json::Value>> = GraphQLQuery {
-            query: GRAPHQL_SEARCH_REPOSITORIES_QUERY.to_string(),
-            variables,
-        };
-
-        let response = client
-            .post(client.graphql_url())
-            .json(&graphql_query)
-            .send()
-            .await?;
-
-        let data: SearchResult = super::response::graphql(response).await?;
+        let data: SearchResult = super::response::query(
+            client,
+            GRAPHQL_SEARCH_REPOSITORIES_QUERY,
+            json!({
+                "queryString": query_string,
+                "first": (max_total - all_repositories.len()).min(100),
+                "after": after_cursor,
+            }),
+        )
+        .await?;
         let page_is_empty = data.search.edges.is_empty();
         let page_repositories = data
             .search
@@ -244,17 +192,4 @@ pub async fn search_repositories(
 
     all_repositories.truncate(max_total);
     Ok(all_repositories)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_search_repository_default() {
-        let repo = SearchRepository::default();
-        assert_eq!(repo.stargazer_count, 0);
-        assert_eq!(repo.fork_count, 0);
-        assert!(repo.description.is_none());
-    }
 }

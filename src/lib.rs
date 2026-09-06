@@ -2,12 +2,13 @@
 //!
 //! A Rust library for GitHub API integration with dual GraphQL/REST support.
 //!
-//! ## Features
+//! - Repository metadata through GraphQL or REST, with configurable REST fallback.
+//! - Authenticated account discovery, repository inventories and open issues/PRs.
+//! - Owned page streams, borrowed page callbacks and complete collections.
+//! - Repository search, stargazers and resource-specific quota information.
 //!
-//! - **Dual API**: GraphQL primary with REST fallback
-//! - **Search**: Repository search with filters
-//! - **Performance**: Connection pooling and async I/O
-//! - **Type Safety**: Comprehensive error handling
+//! Start with [`GitHubService`], configure authentication with [`GitHubClient::builder`],
+//! or process pages with [`GitHubService::get_open_issue_pages`].
 //!
 //! ## Quick Start
 //!
@@ -20,16 +21,15 @@
 //! // Get repository info
 //! let repo = service.get_repository_info("microsoft", "vscode").await?;
 //! println!("{}: {} stars", repo.name_with_owner, repo.stargazer_count);
-//!
-//! // Search recent repositories (30 days back, limit 10, Rust language, min 100 stars)
-//! let repos = service.search_repositories(30, 10, Some("rust"), 100).await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! ## Authentication
 //!
-//! Set `GITHUB_TOKEN` for authenticated requests. Quotas vary by API resource and token.
+//! `GitHubService::new()` reads `GITHUB_TOKEN`; the explicit client builder does not.
+//! Collections and search require a token. Repository metadata also supports anonymous
+//! REST access. Quotas vary by API resource and token.
 
 pub mod config;
 pub mod error;
@@ -111,16 +111,15 @@ pub fn parse_github_node_id(node_id: &str) -> i64 {
 /// assert!(parse_repository("invalid").is_err());
 /// ```
 pub fn parse_repository(repo: &str) -> std::result::Result<(String, String), String> {
-    let parts: Vec<&str> = repo.split('/').collect();
-    if parts.len() != 2 {
+    let Some((owner, name)) = repo.split_once('/').filter(|(_, name)| !name.contains('/')) else {
         return Err(format!(
             "Invalid repository format '{}'. Use 'owner/repo'",
             repo
         ));
-    }
+    };
 
-    let owner = parts[0].trim();
-    let name = parts[1].trim();
+    let owner = owner.trim();
+    let name = name.trim();
 
     if owner.is_empty() || name.is_empty() {
         return Err(format!(

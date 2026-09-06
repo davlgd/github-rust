@@ -2,81 +2,38 @@ use crate::github::client::GitHubClient;
 use crate::github::types::*;
 use crate::{config::*, error::*};
 use serde::Deserialize;
-use std::collections::HashMap;
+use serde_json::json;
 
 pub use crate::github::models::Repository;
 
-/// Full repository information from GitHub API.
-///
-/// Contains comprehensive details about a repository including metadata,
-/// statistics, and related information.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphQLRepository {
-    /// Opaque global node ID, shared by the REST and GraphQL APIs.
     #[serde(rename = "id")]
-    pub node_id: String,
-    /// Numeric database ID, when supplied by GitHub.
-    #[serde(rename = "databaseId")]
-    pub database_id: Option<u64>,
-    /// Repository name (without owner)
-    pub name: String,
-    /// Full repository name in "owner/repo" format
-    #[serde(rename = "nameWithOwner")]
-    pub name_with_owner: String,
-    /// Repository description
-    pub description: Option<String>,
-    /// GitHub URL for the repository
-    pub url: String,
-    /// Custom homepage URL if set
-    #[serde(rename = "homepageUrl")]
-    pub homepage_url: Option<String>,
-    /// ISO 8601 timestamp when repository was created
-    #[serde(rename = "createdAt")]
-    pub created_at: String,
-    /// ISO 8601 timestamp of last update
-    #[serde(rename = "updatedAt")]
-    pub updated_at: String,
-    /// ISO 8601 timestamp of last push
-    #[serde(rename = "pushedAt")]
-    pub pushed_at: Option<String>,
-    /// Whether the repository is private
-    #[serde(rename = "isPrivate")]
-    pub is_private: bool,
-    /// Whether the repository is a fork
-    #[serde(rename = "isFork")]
-    pub is_fork: bool,
-    /// Whether the repository is archived
-    #[serde(rename = "isArchived")]
-    pub is_archived: bool,
-    /// Number of stars
-    #[serde(rename = "stargazerCount")]
-    pub stargazer_count: u32,
-    /// Number of forks
-    #[serde(rename = "forkCount")]
-    pub fork_count: u32,
-    /// Number of watchers
-    pub watchers: TotalCount,
-    /// Number of open issues
-    pub issues: TotalCount,
-    /// Number of pull requests
-    #[serde(rename = "pullRequests")]
-    pub pull_requests: TotalCount,
-    /// Number of releases
-    pub releases: TotalCount,
-    /// Primary programming language
-    #[serde(rename = "primaryLanguage")]
-    pub primary_language: Option<Language>,
-    /// All languages used in the repository
-    pub languages: GraphQLLanguages,
-    /// License information
-    #[serde(rename = "licenseInfo")]
-    pub license_info: Option<License>,
-    /// Default branch reference
-    #[serde(rename = "defaultBranchRef")]
-    pub default_branch_ref: Option<Branch>,
-    /// Repository topics/tags
-    #[serde(rename = "repositoryTopics")]
-    pub repository_topics: TopicConnection,
+    node_id: String,
+    database_id: Option<u64>,
+    name: String,
+    name_with_owner: String,
+    description: Option<String>,
+    url: String,
+    homepage_url: Option<String>,
+    created_at: String,
+    updated_at: String,
+    pushed_at: Option<String>,
+    is_private: bool,
+    is_fork: bool,
+    is_archived: bool,
+    stargazer_count: u32,
+    fork_count: u32,
+    watchers: TotalCount,
+    issues: TotalCount,
+    pull_requests: TotalCount,
+    releases: TotalCount,
+    primary_language: Option<Language>,
+    languages: GraphQLLanguages,
+    license_info: Option<License>,
+    default_branch_ref: Option<Branch>,
+    repository_topics: TopicConnection,
 }
 
 #[derive(Deserialize)]
@@ -148,24 +105,13 @@ pub async fn get_repository_info(
     owner: &str,
     name: &str,
 ) -> Result<Repository> {
-    let mut variables = HashMap::new();
-    variables.insert("owner".to_string(), owner.to_string());
-    variables.insert("name".to_string(), name.to_string());
-
-    let query: GraphQLQuery<HashMap<String, String>> = GraphQLQuery {
-        query: GRAPHQL_REPOSITORY_QUERY.to_string(),
-        variables,
-    };
-
-    let response = client
-        .post(client.graphql_url())
-        .json(&query)
-        .send()
-        .await?;
-
-    let data: RepositoryResponse = super::response::graphql(response)
-        .await
-        .map_err(|error| error.with_repository_context(owner, name))?;
+    let data: RepositoryResponse = super::response::query(
+        client,
+        GRAPHQL_REPOSITORY_QUERY,
+        json!({"owner": owner, "name": name}),
+    )
+    .await
+    .map_err(|error| error.with_repository_context(owner, name))?;
     data.repository
         .map(Into::into)
         .ok_or_else(|| GitHubError::NotFoundError(format!("{owner}/{name}")))

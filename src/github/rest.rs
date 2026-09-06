@@ -182,6 +182,7 @@ pub async fn get_repository_stargazers(
 
     let response = client
         .get(&stargazers_url)
+        // Replace the default Accept value; RequestBuilder::header would append it.
         .headers(reqwest::header::HeaderMap::from_iter([(
             reqwest::header::ACCEPT,
             reqwest::header::HeaderValue::from_static("application/vnd.github.v3.star+json"),
@@ -244,48 +245,5 @@ fn convert_rest_repository(rest: RestRepository, lang_stats: Option<LanguageStat
         }),
         default_branch: Some(rest.default_branch),
         topics: rest.topics,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json;
-
-    #[test]
-    fn test_stargazer_deserialization() {
-        let json_data = r#"[
-            {
-                "starred_at": "2015-09-11T10:42:05Z",
-                "user": {
-                    "login": "testuser",
-                    "id": 12345,
-                    "node_id": "MDQ6VXNlcjEyMzQ1",
-                    "avatar_url": "https://avatars.githubusercontent.com/u/12345?v=4",
-                    "gravatar_id": "",
-                    "url": "https://api.github.com/users/testuser",
-                    "html_url": "https://github.com/testuser",
-                    "followers_url": "https://api.github.com/users/testuser/followers",
-                    "following_url": "https://api.github.com/users/testuser/following{/other_user}",
-                    "gists_url": "https://api.github.com/users/testuser/gists{/gist_id}",
-                    "starred_url": "https://api.github.com/users/testuser/starred{/owner}{/repo}",
-                    "subscriptions_url": "https://api.github.com/users/testuser/subscriptions",
-                    "organizations_url": "https://api.github.com/users/testuser/orgs",
-                    "repos_url": "https://api.github.com/users/testuser/repos",
-                    "events_url": "https://api.github.com/users/testuser/events{/privacy}",
-                    "received_events_url": "https://api.github.com/users/testuser/received_events",
-                    "type": "User",
-                    "site_admin": false
-                }
-            }
-        ]"#;
-
-        let stargazers: Vec<StargazerWithDate> =
-            serde_json::from_str(json_data).expect("Failed to deserialize stargazers");
-        assert_eq!(stargazers.len(), 1);
-        assert_eq!(stargazers[0].starred_at, "2015-09-11T10:42:05Z");
-        assert_eq!(stargazers[0].user.login, "testuser");
-        assert_eq!(stargazers[0].user.id, 12345);
-        assert!(!stargazers[0].user.site_admin);
     }
 }

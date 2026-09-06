@@ -1,7 +1,8 @@
 //! Open issues and pull requests, with bounded multi-repository traversal.
 use super::{
-    accounts::{Count, query, require_token, validate_owner},
+    accounts::{Count, require_token, validate_owner},
     pagination::{Connection, FetchOptions, Tracker},
+    response::query,
 };
 use crate::{GitHubClient, GitHubError, Result};
 use chrono::{DateTime, Utc};

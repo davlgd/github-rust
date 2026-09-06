@@ -16,12 +16,13 @@ pub enum FallbackPolicy {
 /// High-level service for GitHub API operations.
 ///
 /// `GitHubService` is the main entry point for interacting with the GitHub API.
-/// It provides a simple, ergonomic interface with automatic fallback from GraphQL
-/// to REST API when needed.
+/// Repository metadata lookups use REST anonymously, or GraphQL with optional
+/// REST fallback on HTTP 502, 503 and 504 when a token is configured.
 ///
 /// # Authentication
 ///
-/// The service automatically detects the `GITHUB_TOKEN` environment variable.
+/// [`Self::new()`] reads `GITHUB_TOKEN`. [`Self::with_client()`] uses the supplied
+/// client configuration without reading the environment.
 /// Token permissions control access. Quotas vary by API resource and token type.
 ///
 /// # Example
@@ -32,9 +33,9 @@ pub enum FallbackPolicy {
 /// # async fn example() -> github_rust::Result<()> {
 /// let service = GitHubService::new()?;
 ///
-/// // Check authentication status
+/// // Token presence does not verify permissions or quotas.
 /// if service.has_token() {
-///     println!("Authenticated with higher rate limits");
+///     println!("Token configured");
 /// }
 ///
 /// // Get repository information
@@ -53,12 +54,12 @@ pub struct GitHubService {
 impl GitHubService {
     /// Creates a new GitHub service with default configuration.
     ///
-    /// Automatically detects `GITHUB_TOKEN` from environment variables.
+    /// Reads `GITHUB_TOKEN`; an unset, empty or whitespace-only value selects anonymous access.
     ///
     /// # Errors
     ///
-    /// Returns an error if the HTTP client cannot be initialized (rare, typically
-    /// indicates system-level TLS or network configuration issues).
+    /// Returns an error if a nonempty token cannot form an Authorization header
+    /// or the HTTP client cannot be initialized. Token permissions are checked by GitHub.
     ///
     /// # Example
     ///
@@ -68,7 +69,6 @@ impl GitHubService {
     /// let service = GitHubService::new()?;
     /// # Ok::<(), github_rust::GitHubError>(())
     /// ```
-    #[must_use = "Creating a service without using it is wasteful"]
     pub fn new() -> Result<Self> {
         let client = GitHubClient::new()?;
         Ok(Self::with_client(client))
@@ -98,6 +98,8 @@ impl GitHubService {
     ///
     /// Uses REST directly without a token. Authenticated lookups use GraphQL,
     /// with REST fallback only for HTTP 502/503/504 by default.
+    /// REST uses two requests: metadata, then languages. Errors from the language
+    /// request propagate, except a 404 which leaves the breakdown unavailable.
     /// Authentication, permission, quota and decoding errors are returned unchanged.
     ///
     /// # Arguments
@@ -246,7 +248,7 @@ impl GitHubService {
 
     /// Returns whether a GitHub token is configured.
     ///
-    /// Useful for conditional logic based on authentication status.
+    /// This does not verify the token, its permissions or its quotas.
     ///
     /// # Example
     ///
@@ -268,7 +270,7 @@ impl GitHubService {
 
     /// Gets all repositories starred by the authenticated user.
     ///
-    /// Requires authentication via `GITHUB_TOKEN`.
+    /// Requires an authorized token, configured through the builder or `new()`.
     ///
     /// # Returns
     ///
@@ -301,7 +303,7 @@ impl GitHubService {
 
     /// Gets the profile of the authenticated user.
     ///
-    /// Requires authentication via `GITHUB_TOKEN`.
+    /// Requires an authorized token, configured through the builder or `new()`.
     ///
     /// # Errors
     ///
@@ -336,8 +338,8 @@ impl GitHubService {
     ///
     /// * `owner` - Repository owner
     /// * `name` - Repository name
-    /// * `per_page` - Results per page (max 100, default 30)
-    /// * `page` - Page number (default 1)
+    /// * `per_page` - Results per page (default 30); values above 100 are capped.
+    /// * `page` - Page number (default 1). Both arguments must be greater than zero.
     ///
     /// # Errors
     ///
@@ -392,7 +394,7 @@ impl GitHubService {
     /// The stream owns its client and login and is `Send + 'static`. Requests start
     /// when polled; dropping the stream cancels traversal. An error ends the stream.
     /// Pages are provisional until the stream ends successfully, and are not sorted.
-    /// Validation and authentication errors are returned as stream items.
+    /// Requires a token. Validation and authentication errors are returned as stream items.
     ///
     /// ```no_run
     /// use futures_util::TryStreamExt;
@@ -417,7 +419,7 @@ impl GitHubService {
     }
 
     /// List repositories owned by a user or organization, including visible private,
-    /// forked and archived repositories. Results are sorted by full name.
+    /// forked and archived repositories. Requires a token. Results are sorted by full name.
     pub async fn get_owned_repositories(&self, login: &str) -> Result<super::OwnedRepositories> {
         super::accounts::repositories(
             &self.client,
@@ -470,7 +472,8 @@ impl GitHubService {
         )
     }
 
-    /// Fetch every open work item in one repository, sorted by update time descending.
+    /// Fetch every open issue in one repository, sorted by update time descending.
+    /// Requires a token.
     pub async fn get_open_issues(&self, owner: &str, name: &str) -> Result<Vec<super::Issue>> {
         self.get_open_issues_for_repositories(&[super::RepositoryCoordinates::new(owner, name)?])
             .await
@@ -535,7 +538,8 @@ impl GitHubService {
         )
     }
 
-    /// Fetch every open work item in one repository, sorted by update time descending.
+    /// Fetch every open pull request in one repository, sorted by update time descending.
+    /// Requires a token.
     pub async fn get_open_pull_requests(
         &self,
         owner: &str,
@@ -560,13 +564,9 @@ impl GitHubService {
         )
         .await
     }
-    /// Traverse repository scopes with bounded concurrency and lend each page to an async callback.
-    /// Empty scopes return immediately without authentication or a callback.
-    /// Use `async |page| { ...; Ok(()) }` to borrow the page across await points.
-    /// Pages are provisional until the whole call succeeds. Callback errors and dropping
-    /// the future cancel traversal. No tasks are spawned. Labels and assignees must fit
-    /// their embedded 100-node pages, otherwise this returns a pagination error.
-    /// Totals, cursors and repository identity are checked; GitHub offers no snapshot isolation.
+    /// Collect open pull requests while lending each page to an async callback.
+    /// Uses the same validation, concurrency and cancellation rules as
+    /// [`Self::get_open_issues_with_progress`].
     /// For a `Send` stream of owned pages, use [`Self::get_open_pull_request_pages`].
     pub async fn get_open_pull_requests_with_progress<F>(
         &self,
@@ -583,23 +583,5 @@ impl GitHubService {
             Some(progress),
         )
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_github_service_creation() {
-        let service = GitHubService::new();
-        assert!(service.is_ok());
-    }
-
-    #[test]
-    fn test_github_service_has_token_detection() {
-        let service = GitHubService::new().unwrap();
-        // Token detection should work without panicking
-        let _has_token = service.has_token();
     }
 }

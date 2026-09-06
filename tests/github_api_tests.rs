@@ -1,5 +1,7 @@
 #[path = "cases/accounts.rs"]
 mod accounts;
+#[path = "cases/client.rs"]
+mod client;
 #[path = "cases/errors.rs"]
 mod errors;
 #[path = "cases/fallback.rs"]
@@ -14,62 +16,7 @@ mod support;
 #[path = "cases/work_items.rs"]
 mod work_items;
 
-use github_rust::{GitHubService, SearchRepository, StargazerWithDate, User};
-
-#[test]
-fn test_explicit_client_authentication() {
-    use github_rust::GitHubClient;
-    let anonymous = GitHubClient::builder().build().unwrap();
-    assert!(!anonymous.has_token());
-    let authenticated = GitHubClient::builder()
-        .token("test_token_value".into())
-        .build()
-        .unwrap();
-    assert!(authenticated.has_token());
-    assert!(GitHubClient::builder().token("".into()).build().is_err());
-    assert!(
-        GitHubClient::builder()
-            .token("invalid\ntoken".into())
-            .build()
-            .is_err()
-    );
-}
-
-#[test]
-fn test_repository_parsing() {
-    use github_rust::parse_repository;
-
-    // Test valid repository format
-    let result = parse_repository("owner/repo");
-    assert!(result.is_ok());
-    let (owner, repo) = result.unwrap();
-    assert_eq!(owner, "owner");
-    assert_eq!(repo, "repo");
-
-    // Test invalid formats
-    assert!(parse_repository("invalid").is_err());
-    assert!(parse_repository("/repo").is_err());
-    assert!(parse_repository("owner/").is_err());
-    assert!(parse_repository("owner/repo/extra").is_err());
-
-    // Test with whitespace (should be trimmed)
-    let result = parse_repository(" owner / repo ");
-    assert!(result.is_ok());
-    let (owner, repo) = result.unwrap();
-    assert_eq!(owner, "owner");
-    assert_eq!(repo, "repo");
-}
-
-#[test]
-fn test_search_repository_default() {
-    // Test that SearchRepository can be created with Default
-    let repo = SearchRepository::default();
-    assert_eq!(repo.node_id, "");
-    assert_eq!(repo.database_id, None);
-    assert_eq!(repo.name, "");
-    assert_eq!(repo.stargazer_count, 0);
-    assert_eq!(repo.fork_count, 0);
-}
+use github_rust::{GitHubService, StargazerWithDate, User};
 
 #[tokio::test]
 #[ignore] // Only run with internet connection
@@ -81,18 +28,6 @@ async fn test_real_github_api_rate_limit() {
         .expect("Live rate limit request failed");
     assert!(limits.limit > 0);
     assert!(limits.remaining <= limits.limit);
-}
-
-#[test]
-fn test_constants_are_exported() {
-    use github_rust::{GITHUB_API_URL, GITHUB_GRAPHQL_URL};
-
-    // Test that constants are properly exported and have reasonable values
-    let api_url = GITHUB_API_URL;
-    let graphql_url = GITHUB_GRAPHQL_URL;
-
-    assert!(api_url.starts_with("https://"));
-    assert!(graphql_url.starts_with("https://"));
 }
 
 #[test]

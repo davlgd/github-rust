@@ -9,9 +9,13 @@ use wiremock::{
 #[tokio::test]
 async fn transports_preserve_identity_and_distinguish_unknown_counts() {
     let server = MockServer::start().await;
+    let mut rest_body = rest_repository();
+    rest_body["license"] = json!({"name": "MIT License", "spdx_id": "MIT"});
+    let mut graphql_body = graphql_repository();
+    graphql_body["licenseInfo"] = json!({"name": "MIT License", "spdxId": "MIT"});
     Mock::given(method("GET"))
         .and(path("/repos/owner/repo"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(rest_repository()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rest_body))
         .expect(1)
         .mount(&server)
         .await;
@@ -31,8 +35,7 @@ async fn transports_preserve_identity_and_distinguish_unknown_counts() {
                 .contains("issues(states: OPEN)")
         })
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"data": {"repository": graphql_repository()}})),
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"repository": graphql_body}})),
         )
         .expect(1)
         .mount(&server)
@@ -57,9 +60,16 @@ async fn transports_preserve_identity_and_distinguish_unknown_counts() {
     assert_eq!(graphql.release_count, Some(0));
     assert_eq!(rest.topics(), graphql.topics());
     assert!(rest.languages_complete && graphql.languages_complete);
-    let serialized = serde_json::to_value(rest).unwrap();
-    assert_eq!(serialized["node_id"], "opaque-node-id");
-    assert!(serialized.get("repositoryTopics").is_none());
+    for repo in [rest, graphql] {
+        assert_eq!(repo.license_spdx(), Some("MIT"));
+        let serialized = serde_json::to_value(repo).unwrap();
+        assert_eq!(serialized["node_id"], "opaque-node-id");
+        assert!(serialized.get("repositoryTopics").is_none());
+        assert_eq!(serialized["license_info"]["spdxId"], "MIT");
+        assert!(serialized["license_info"].get("spdx_id").is_none());
+        let restored: github_rust::Repository = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.license_spdx(), Some("MIT"));
+    }
 }
 
 #[tokio::test]

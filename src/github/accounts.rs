@@ -1,7 +1,7 @@
 //! Authenticated account and owned-repository collections.
 use super::{
     pagination::{Connection, FetchOptions, Tracker},
-    response,
+    response::query,
     types::Language,
 };
 use crate::{GitHubClient, GitHubError, Result};
@@ -138,20 +138,6 @@ pub(crate) fn validate_owner(owner: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) async fn query<T: serde::de::DeserializeOwned>(
-    client: &GitHubClient,
-    query: &str,
-    variables: serde_json::Value,
-) -> Result<T> {
-    response::graphql(
-        client
-            .post(client.graphql_url())
-            .json(&json!({"query": query, "variables": variables}))
-            .send()
-            .await?,
-    )
-    .await
-}
 pub(crate) async fn viewer(client: &GitHubClient, options: FetchOptions) -> Result<Viewer> {
     require_token(client)?;
     #[derive(Deserialize)]
@@ -220,8 +206,11 @@ pub(crate) fn repository_pages(
             if done {
                 return Ok(None);
             }
-            validate_owner(&login)?;
-            require_token(&client)?;
+            // Validate once, when the first page is polled, so errors stay stream items.
+            if previous.is_none() {
+                validate_owner(&login)?;
+                require_token(&client)?;
+            }
             let data: Data = query(
                 &client,
                 include_str!("queries/repositories.graphql"),
