@@ -29,42 +29,29 @@
 //!
 //! ## Authentication
 //!
-//! Set `GITHUB_TOKEN` environment variable for higher rate limits (5000/hour vs 60/hour).
+//! Set `GITHUB_TOKEN` for authenticated requests. Quotas vary by API resource and token.
 
 pub mod config;
 pub mod error;
 pub mod github;
 
 pub use config::{GITHUB_API_URL, GITHUB_GRAPHQL_URL};
-pub use error::{GitHubError, Result};
+pub use error::{DecodeError, GitHubError, RateLimitDetails, Result};
 pub use github::{
-    GitHubClient, GitHubService, RateLimit, Repository, SearchRepository, StargazerWithDate, User,
-    UserProfile,
+    FallbackPolicy, GitHubClient, GitHubClientBuilder, GitHubService, LanguageUsage, RateLimit,
+    RateLimits, Repository, SearchRepository, StargazerWithDate, User, UserProfile,
 };
 
 use base64::Engine;
 
-/// Parses a GitHub GraphQL node ID to extract the numeric repository ID.
+/// Best-effort decoder for historical node ID formats. Returns 0 on failure.
 ///
-/// GitHub node IDs come in two formats:
-/// - New format: `R_kgDO...` - URL-safe base64-encoded msgpack with structure [type, uint32_id]
-/// - Legacy format: `MDEwOlJlcG9zaXRvcnk...` - standard base64-encoded string "010:Repository{id}"
-///
-/// Returns 0 if parsing fails (should not happen with valid GitHub IDs).
-///
-/// # Examples
-///
-/// ```
-/// use github_rust::parse_github_node_id;
-///
-/// // New format (URL-safe base64 msgpack)
-/// let id = parse_github_node_id("R_kgDOQBnJRQ");
-/// assert_eq!(id, 1075431749);
-///
-/// // Returns 0 for invalid IDs
-/// let invalid = parse_github_node_id("invalid");
-/// assert_eq!(invalid, 0);
-/// ```
+/// Node IDs are opaque: new formats are not guaranteed to be supported.
+/// Use the `node_id` and `database_id` fields returned by repository operations.
+#[deprecated(
+    since = "0.2.0",
+    note = "GitHub node IDs are opaque; use Repository::database_id or SearchRepository::database_id"
+)]
 pub fn parse_github_node_id(node_id: &str) -> i64 {
     // New format: R_kgDO... (URL-safe base64-encoded msgpack)
     if let Some(b64_part) = node_id.strip_prefix("R_") {
@@ -95,7 +82,10 @@ pub fn parse_github_node_id(node_id: &str) -> i64 {
             .decode(node_id)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .and_then(|s| s.split(':').next_back().and_then(|n| n.parse::<i64>().ok()))
+            .and_then(|s| {
+                s.strip_prefix("010:Repository")
+                    .and_then(|n| n.parse::<i64>().ok())
+            })
     {
         return id;
     }
@@ -141,6 +131,7 @@ pub fn parse_repository(repo: &str) -> std::result::Result<(String, String), Str
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -174,6 +165,14 @@ mod tests {
         assert_eq!(parse_github_node_id("R_kgDOQpc_vg"), 1117208510);
         // R_kgDOPQG3Mw = anomalyco/opentui (ID: 1023522611)
         assert_eq!(parse_github_node_id("R_kgDOPQG3Mw"), 1023522611);
+    }
+
+    #[test]
+    fn test_parse_github_node_id_legacy_format() {
+        assert_eq!(
+            parse_github_node_id("MDEwOlJlcG9zaXRvcnkxMjk2MjY5"),
+            1296269
+        );
     }
 
     #[test]

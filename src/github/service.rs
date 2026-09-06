@@ -3,6 +3,16 @@ use crate::github::client::GitHubClient;
 use crate::github::graphql::{self, Repository};
 use crate::github::{rest, search};
 
+/// REST fallback policy for authenticated repository lookups.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FallbackPolicy {
+    /// Preserve every GraphQL error without trying REST.
+    Never,
+    /// Try REST only when GraphQL returns HTTP 502, 503 or 504.
+    #[default]
+    OnServerUnavailable,
+}
+
 /// High-level service for GitHub API operations.
 ///
 /// `GitHubService` is the main entry point for interacting with the GitHub API.
@@ -12,8 +22,7 @@ use crate::github::{rest, search};
 /// # Authentication
 ///
 /// The service automatically detects the `GITHUB_TOKEN` environment variable.
-/// - **With token**: 5,000 requests/hour, access to private repos
-/// - **Without token**: 60 requests/hour, public repos only
+/// Token permissions control access. Quotas vary by API resource and token type.
 ///
 /// # Example
 ///
@@ -37,6 +46,7 @@ use crate::github::{rest, search};
 pub struct GitHubService {
     /// The underlying HTTP client with connection pooling.
     pub client: GitHubClient,
+    fallback_policy: FallbackPolicy,
 }
 
 impl GitHubService {
@@ -60,7 +70,7 @@ impl GitHubService {
     #[must_use = "Creating a service without using it is wasteful"]
     pub fn new() -> Result<Self> {
         let client = GitHubClient::new()?;
-        Ok(Self { client })
+        Ok(Self::with_client(client))
     }
 
     /// Creates a GitHub service with a custom client.
@@ -68,13 +78,25 @@ impl GitHubService {
     /// Useful for testing or when you need custom HTTP configuration.
     #[must_use]
     pub fn with_client(client: GitHubClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            fallback_policy: FallbackPolicy::default(),
+        }
+    }
+
+    /// Selects which authenticated GraphQL failures may trigger REST.
+    /// Anonymous repository lookups always use REST directly.
+    #[must_use]
+    pub fn with_fallback_policy(mut self, policy: FallbackPolicy) -> Self {
+        self.fallback_policy = policy;
+        self
     }
 
     /// Fetches detailed information about a GitHub repository.
     ///
-    /// Uses GraphQL API by default for efficiency, automatically falls back to
-    /// REST API if GraphQL fails (e.g., when no token is provided for certain queries).
+    /// Uses REST directly without a token. Authenticated lookups use GraphQL,
+    /// with REST fallback only for HTTP 502/503/504 by default.
+    /// Authentication, permission, quota and decoding errors are returned unchanged.
     ///
     /// # Arguments
     ///
@@ -110,16 +132,30 @@ impl GitHubService {
     /// # }
     /// ```
     pub async fn get_repository_info(&self, owner: &str, name: &str) -> Result<Repository> {
+        if !self.client.has_token() {
+            return rest::get_repository_info(&self.client, owner, name).await;
+        }
         match graphql::get_repository_info(&self.client, owner, name).await {
             Ok(repo) => Ok(repo),
-            Err(GitHubError::AuthenticationError(_)) if !self.client.has_token() => {
-                tracing::debug!("GraphQL auth failed without token, falling back to REST");
-                rest::get_repository_info(&self.client, owner, name).await
+            Err(graphql_error)
+                if self.fallback_policy == FallbackPolicy::OnServerUnavailable
+                    && matches!(
+                        &graphql_error,
+                        GitHubError::ApiError {
+                            status: 502..=504,
+                            ..
+                        }
+                    ) =>
+            {
+                tracing::debug!("GraphQL unavailable, trying REST: {graphql_error}");
+                rest::get_repository_info(&self.client, owner, name)
+                    .await
+                    .map_err(|rest_error| GitHubError::FallbackError {
+                        graphql: Box::new(graphql_error),
+                        rest: Box::new(rest_error),
+                    })
             }
-            Err(e) => {
-                tracing::debug!("GraphQL failed ({}), falling back to REST", e);
-                rest::get_repository_info(&self.client, owner, name).await
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -189,7 +225,7 @@ impl GitHubService {
     /// let limits = service.check_rate_limit().await?;
     ///
     /// println!("Remaining: {}/{}", limits.remaining, limits.limit);
-    /// println!("Resets at: {}", limits.reset_datetime());
+    /// println!("Resets at: {:?}", limits.reset_datetime());
     ///
     /// if limits.is_exceeded() {
     ///     println!("Rate limited! Wait {:?}", limits.time_until_reset());
@@ -197,8 +233,13 @@ impl GitHubService {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn check_rate_limit(&self) -> Result<crate::github::client::RateLimit> {
+    pub async fn check_rate_limit(&self) -> Result<crate::RateLimit> {
         self.client.check_rate_limit().await
+    }
+
+    /// Returns separate REST core, search and GraphQL quotas when available.
+    pub async fn check_rate_limits(&self) -> Result<crate::RateLimits> {
+        self.client.check_rate_limits().await
     }
 
     /// Returns whether a GitHub token is configured.
@@ -212,9 +253,9 @@ impl GitHubService {
     /// let service = GitHubService::new()?;
     ///
     /// if service.has_token() {
-    ///     println!("Authenticated: 5000 requests/hour");
+    ///     println!("Token configured");
     /// } else {
-    ///     println!("Anonymous: 60 requests/hour");
+    ///     println!("Anonymous access");
     /// }
     /// # Ok::<(), github_rust::GitHubError>(())
     /// ```
@@ -230,7 +271,7 @@ impl GitHubService {
     /// # Returns
     ///
     /// List of repository full names in "owner/repo" format.
-    /// Limited to 10,000 repositories maximum.
+    /// Returns a pagination error if more than 100 pages must be fetched.
     ///
     /// # Errors
     ///
@@ -286,7 +327,8 @@ impl GitHubService {
     /// Gets users who starred a repository with timestamps.
     ///
     /// Returns stargazers with the date they starred the repository.
-    /// Supports pagination for repositories with many stars.
+    /// Supports pagination. GitHub restricts listing access to repository admins
+    /// and collaborators; empty results may also reflect access restrictions.
     ///
     /// # Arguments
     ///

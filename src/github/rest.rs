@@ -1,7 +1,7 @@
+use crate::error::*;
 use crate::github::client::GitHubClient;
-use crate::github::graphql::Repository as GraphQLRepository;
+use crate::github::models::Repository;
 use crate::github::types::*;
-use crate::{config::*, error::*};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
 
@@ -13,6 +13,7 @@ fn encode_path_segment(segment: &str) -> String {
 #[derive(Deserialize)]
 struct RestRepository {
     id: u64,
+    node_id: String,
     name: String,
     full_name: String,
     description: Option<String>,
@@ -26,8 +27,7 @@ struct RestRepository {
     archived: bool,
     stargazers_count: u32,
     forks_count: u32,
-    watchers_count: u32,
-    open_issues_count: u32,
+    subscribers_count: Option<u32>,
     language: Option<String>,
     license: Option<RestLicense>,
     default_branch: String,
@@ -56,110 +56,48 @@ pub async fn get_repository_info(
     client: &GitHubClient,
     owner: &str,
     name: &str,
-) -> Result<GraphQLRepository> {
+) -> Result<Repository> {
     let encoded_owner = encode_path_segment(owner);
     let encoded_name = encode_path_segment(name);
     let repo_url = format!(
         "{}/repos/{}/{}",
-        GITHUB_API_URL, encoded_owner, encoded_name
+        client.rest_url(),
+        encoded_owner,
+        encoded_name
     );
 
-    let response = client.client().get(&repo_url).send().await?;
+    let response = client.get(&repo_url).send().await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "Invalid or missing GitHub token".to_string(),
-            )),
-            403 => {
-                // Parse HTTP 403 more intelligently
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "REST API rate limit exceeded".to_string(),
-                    ))
-                } else if error_lower.contains("repository access blocked")
-                    || error_lower.contains("access blocked")
-                    || error_lower.contains("blocked")
-                {
-                    Err(GitHubError::AccessBlockedError(format!(
-                        "{}/{}",
-                        owner, name
-                    )))
-                } else {
-                    // Generic access denied (permissions, private repo, etc.)
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied to {}/{}: {}",
-                        owner, name, error_text
-                    )))
-                }
-            }
-            404 => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-            451 => Err(GitHubError::DmcaBlockedError(format!("{}/{}", owner, name))),
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
+    let response = super::response::check(response)
+        .await
+        .map_err(|error| error.with_repository_context(owner, name))?;
 
     let rest_repo: RestRepository = response.json().await?;
 
     let languages_url = format!(
         "{}/repos/{}/{}/languages",
-        GITHUB_API_URL, encoded_owner, encoded_name
+        client.rest_url(),
+        encoded_owner,
+        encoded_name
     );
-    let lang_response = client.client().get(&languages_url).send().await?;
-    let language_stats: LanguageStats = if lang_response.status().is_success() {
-        lang_response.json().await?
-    } else {
-        LanguageStats {
-            languages: std::collections::HashMap::new(),
-        }
-    };
+    let lang_response = client.get(&languages_url).send().await?;
+    let language_stats: Option<LanguageStats> =
+        if lang_response.status() != reqwest::StatusCode::NOT_FOUND {
+            Some(super::response::check(lang_response).await?.json().await?)
+        } else {
+            tracing::debug!(status = %lang_response.status(), "Language breakdown unavailable");
+            None
+        };
 
-    Ok(convert_rest_to_graphql(rest_repo, language_stats))
+    Ok(convert_rest_repository(rest_repo, language_stats))
 }
 
 pub async fn get_user_profile(client: &GitHubClient) -> Result<UserProfile> {
-    let user_url = format!("{}/user", GITHUB_API_URL);
+    let user_url = format!("{}/user", client.rest_url());
 
-    let response = client.client().get(&user_url).send().await?;
+    let response = client.get(&user_url).send().await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "GitHub token is required to get user profile".to_string(),
-            )),
-            403 => {
-                // Parse HTTP 403 more intelligently
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "REST API rate limit exceeded".to_string(),
-                    ))
-                } else {
-                    // Generic access denied for user profile
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied for user profile: {}",
-                        error_text
-                    )))
-                }
-            }
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
+    let response = super::response::check(response).await?;
 
     let user_profile: UserProfile = response.json().await?;
     Ok(user_profile)
@@ -182,50 +120,20 @@ pub async fn get_user_starred_repositories(client: &GitHubClient) -> Result<Vec<
     loop {
         // Safety limit to prevent infinite loops or excessive API calls
         if page > MAX_STARRED_PAGES {
-            tracing::warn!(
-                "Reached maximum page limit ({}) for starred repositories. Returning {} repositories.",
-                MAX_STARRED_PAGES,
-                all_starred.len()
-            );
-            break;
+            return Err(GitHubError::PaginationError(
+                "Starred repositories exceed the 100-page safety limit".into(),
+            ));
         }
         let starred_url = format!(
             "{}/user/starred?per_page={}&page={}",
-            GITHUB_API_URL, per_page, page
+            client.rest_url(),
+            per_page,
+            page
         );
 
-        let response = client.client().get(&starred_url).send().await?;
+        let response = client.get(&starred_url).send().await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return match status.as_u16() {
-                401 => Err(GitHubError::AuthenticationError(
-                    "GitHub token is required to get starred repositories".to_string(),
-                )),
-                403 => {
-                    // Parse HTTP 403 more intelligently
-                    let error_lower = error_text.to_lowercase();
-                    if error_lower.contains("rate limit")
-                        || error_lower.contains("api rate limit exceeded")
-                    {
-                        Err(GitHubError::RateLimitError(
-                            "REST API rate limit exceeded".to_string(),
-                        ))
-                    } else {
-                        // Generic access denied for starred repositories
-                        Err(GitHubError::AuthenticationError(format!(
-                            "Access denied for starred repositories: {}",
-                            error_text
-                        )))
-                    }
-                }
-                _ => Err(GitHubError::ApiError {
-                    status: status.as_u16(),
-                    message: error_text,
-                }),
-            };
-        }
+        let response = super::response::check(response).await?;
 
         let starred_repos: Vec<StarredRepository> = response.json().await?;
 
@@ -255,90 +163,61 @@ pub async fn get_repository_stargazers(
 ) -> Result<Vec<StargazerWithDate>> {
     let per_page = per_page.unwrap_or(30).min(100); // GitHub max is 100
     let page = page.unwrap_or(1);
+    if per_page == 0 || page == 0 {
+        return Err(GitHubError::InvalidInput(
+            "page and per_page must be greater than zero".into(),
+        ));
+    }
 
     let encoded_owner = encode_path_segment(owner);
     let encoded_name = encode_path_segment(name);
     let stargazers_url = format!(
         "{}/repos/{}/{}/stargazers?per_page={}&page={}",
-        GITHUB_API_URL, encoded_owner, encoded_name, per_page, page
+        client.rest_url(),
+        encoded_owner,
+        encoded_name,
+        per_page,
+        page
     );
 
     let response = client
-        .client()
         .get(&stargazers_url)
-        .header("Accept", "application/vnd.github.v3.star+json")
+        .headers(reqwest::header::HeaderMap::from_iter([(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/vnd.github.v3.star+json"),
+        )]))
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "Invalid or missing GitHub token".to_string(),
-            )),
-            403 => {
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "REST API rate limit exceeded".to_string(),
-                    ))
-                } else if error_lower.contains("repository access blocked")
-                    || error_lower.contains("access blocked")
-                    || error_lower.contains("blocked")
-                {
-                    Err(GitHubError::AccessBlockedError(format!(
-                        "{}/{}",
-                        owner, name
-                    )))
-                } else {
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied to {}/{}: {}",
-                        owner, name, error_text
-                    )))
-                }
-            }
-            404 => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-            451 => Err(GitHubError::DmcaBlockedError(format!("{}/{}", owner, name))),
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
+    let response = super::response::check(response)
+        .await
+        .map_err(|error| error.with_repository_context(owner, name))?;
 
     let stargazers: Vec<StargazerWithDate> = response.json().await?;
     Ok(stargazers)
 }
 
-fn convert_rest_to_graphql(rest: RestRepository, lang_stats: LanguageStats) -> GraphQLRepository {
-    let languages = LanguageConnection {
-        edges: lang_stats
+fn convert_rest_repository(rest: RestRepository, lang_stats: Option<LanguageStats>) -> Repository {
+    let languages_complete = lang_stats.is_some();
+    let languages = lang_stats.map(|stats| {
+        let mut languages: Vec<_> = stats
             .languages
             .into_iter()
-            .map(|(name, size)| LanguageEdge {
-                size,
-                node: Language { name, color: None },
+            .map(|(name, bytes)| crate::github::models::LanguageUsage {
+                language: Language { name, color: None },
+                bytes,
             })
-            .collect(),
-    };
-
-    let repository_topics = TopicConnection {
-        edges: rest
-            .topics
-            .into_iter()
-            .map(|topic_name| TopicEdge {
-                node: TopicNode {
-                    topic: Topic { name: topic_name },
-                },
-            })
-            .collect(),
-    };
-
-    GraphQLRepository {
-        id: rest.id.to_string(),
+            .collect();
+        languages.sort_by(|a, b| {
+            b.bytes
+                .cmp(&a.bytes)
+                .then_with(|| a.language.name.cmp(&b.language.name))
+        });
+        languages
+    });
+    Repository {
+        node_id: rest.node_id,
+        database_id: Some(rest.id),
         name: rest.name,
         name_with_owner: rest.full_name,
         description: rest.description,
@@ -352,24 +231,19 @@ fn convert_rest_to_graphql(rest: RestRepository, lang_stats: LanguageStats) -> G
         is_archived: rest.archived,
         stargazer_count: rest.stargazers_count,
         fork_count: rest.forks_count,
-        watchers: TotalCount {
-            total_count: rest.watchers_count,
-        },
-        issues: TotalCount {
-            total_count: rest.open_issues_count,
-        },
-        pull_requests: TotalCount { total_count: 0 },
-        releases: TotalCount { total_count: 0 },
+        watcher_count: rest.subscribers_count,
+        open_issue_count: None,
+        pull_request_count: None,
+        release_count: None,
         primary_language: rest.language.map(|name| Language { name, color: None }),
         languages,
+        languages_complete,
         license_info: rest.license.map(|l| License {
             name: l.name,
             spdx_id: l.spdx_id,
         }),
-        default_branch_ref: Some(Branch {
-            name: rest.default_branch,
-        }),
-        repository_topics,
+        default_branch: Some(rest.default_branch),
+        topics: rest.topics,
     }
 }
 
@@ -413,34 +287,5 @@ mod tests {
         assert_eq!(stargazers[0].user.login, "testuser");
         assert_eq!(stargazers[0].user.id, 12345);
         assert!(!stargazers[0].user.site_admin);
-    }
-
-    #[test]
-    fn test_pagination_parameters() {
-        // Test that pagination parameters are validated correctly
-        fn apply_limit(per_page: u32) -> u32 {
-            per_page.min(100)
-        }
-
-        assert_eq!(apply_limit(50), 50);
-        assert_eq!(apply_limit(150), 100);
-        assert_eq!(apply_limit(30), 30);
-    }
-
-    #[test]
-    fn test_stargazers_url_construction() {
-        let owner = "microsoft";
-        let name = "vscode";
-        let per_page = 30;
-        let page = 1;
-
-        let expected_url = format!(
-            "{}/repos/{}/{}/stargazers?per_page={}&page={}",
-            GITHUB_API_URL, owner, name, per_page, page
-        );
-
-        assert!(expected_url.contains("microsoft/vscode/stargazers"));
-        assert!(expected_url.contains("per_page=30"));
-        assert!(expected_url.contains("page=1"));
     }
 }

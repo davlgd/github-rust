@@ -2,8 +2,8 @@ use crate::github::client::GitHubClient;
 use crate::github::types::*;
 use crate::{config::*, error::*};
 use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 
 /// Validates and sanitizes a language parameter for GitHub search.
 /// Returns None if the language is invalid, Some(sanitized) otherwise.
@@ -25,52 +25,23 @@ fn validate_language(language: &str) -> Option<String> {
         return None;
     }
 
-    // Reject if it looks like a search operator injection attempt
-    let lower = trimmed.to_lowercase();
-    let suspicious_patterns = [
-        "repo:",
-        "user:",
-        "org:",
-        "in:",
-        "size:",
-        "fork:",
-        "stars:",
-        "pushed:",
-        "created:",
-        "updated:",
-        "language:",
-        "topic:",
-        "license:",
-        "is:",
-        "has:",
-        "good-first-issues:",
-        "help-wanted-issues:",
-        "archived:",
-        "mirror:",
-        "template:",
-        "sort:",
-        " or ",
-        " and ",
-        " not ",
-    ];
-
-    for pattern in suspicious_patterns {
-        if lower.contains(pattern) {
-            return None;
-        }
-    }
-
     Some(trimmed.to_string())
 }
+
+pub use crate::github::models::SearchRepository;
 
 /// Repository data from GitHub search API.
 ///
 /// A lighter-weight repository struct returned by search operations,
 /// containing the most commonly needed fields.
-#[derive(Deserialize, Serialize, Clone, Default, Debug)]
-pub struct SearchRepository {
-    /// GitHub's internal ID for the repository
-    pub id: String,
+#[derive(Deserialize)]
+struct GraphQLSearchRepository {
+    /// Opaque global node ID, shared by the REST and GraphQL APIs.
+    #[serde(rename = "id")]
+    pub node_id: String,
+    /// Numeric database ID, when supplied by GitHub.
+    #[serde(rename = "databaseId")]
+    pub database_id: Option<u64>,
     /// Repository name (without owner)
     pub name: String,
     /// Full repository name in "owner/repo" format
@@ -106,44 +77,29 @@ pub struct SearchRepository {
     pub repository_topics: TopicConnection,
 }
 
-impl SearchRepository {
-    /// Returns the primary language name, or None if not set.
-    #[must_use]
-    pub fn language(&self) -> Option<&str> {
-        self.primary_language.as_ref().map(|l| l.name.as_str())
-    }
-
-    /// Returns the license name, or None if not set.
-    #[must_use]
-    pub fn license(&self) -> Option<&str> {
-        self.license_info.as_ref().map(|l| l.name.as_str())
-    }
-
-    /// Returns the SPDX license identifier, or None if not available.
-    #[must_use]
-    pub fn license_spdx(&self) -> Option<&str> {
-        self.license_info
-            .as_ref()
-            .and_then(|l| l.spdx_id.as_deref())
-    }
-
-    /// Returns a list of topic names.
-    #[must_use]
-    pub fn topics(&self) -> Vec<&str> {
-        self.repository_topics
-            .edges
-            .iter()
-            .map(|e| e.node.topic.name.as_str())
-            .collect()
-    }
-
-    /// Returns the owner part of name_with_owner.
-    #[must_use]
-    pub fn owner(&self) -> &str {
-        self.name_with_owner
-            .split('/')
-            .next()
-            .unwrap_or(&self.name_with_owner)
+impl From<GraphQLSearchRepository> for SearchRepository {
+    fn from(repo: GraphQLSearchRepository) -> Self {
+        Self {
+            node_id: repo.node_id,
+            database_id: repo.database_id,
+            name: repo.name,
+            name_with_owner: repo.name_with_owner,
+            description: repo.description,
+            url: repo.url,
+            stargazer_count: repo.stargazer_count,
+            fork_count: repo.fork_count,
+            created_at: repo.created_at,
+            updated_at: repo.updated_at,
+            pushed_at: repo.pushed_at,
+            primary_language: repo.primary_language,
+            license_info: repo.license_info,
+            topics: repo
+                .repository_topics
+                .edges
+                .into_iter()
+                .map(|edge| edge.node.topic.name)
+                .collect(),
+        }
     }
 }
 
@@ -172,7 +128,7 @@ struct SearchConnection {
 
 #[derive(Deserialize)]
 struct SearchEdge {
-    node: SearchRepository,
+    node: GraphQLSearchRepository,
 }
 
 /// Search for repositories created in the last N days with minimum stars.
@@ -183,8 +139,15 @@ pub async fn search_repositories(
     language: Option<&str>,
     min_stars: u32,
 ) -> Result<Vec<SearchRepository>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
     let now = Utc::now();
-    let days_ago = now - Duration::days(days_back as i64);
+    let days_ago = now
+        .checked_sub_signed(Duration::days(i64::from(days_back)))
+        .ok_or_else(|| {
+            GitHubError::InvalidInput("days_back exceeds the supported date range".into())
+        })?;
     let date_filter = days_ago.format("%Y-%m-%d").to_string();
 
     let mut query_parts = vec![
@@ -196,7 +159,7 @@ pub async fn search_repositories(
 
     if let Some(lang) = language {
         if let Some(validated_lang) = validate_language(lang) {
-            query_parts.push(format!("language:{}", validated_lang));
+            query_parts.push(format!("language:\"{}\"", validated_lang));
         } else {
             return Err(GitHubError::InvalidInput(format!(
                 "Invalid language parameter: '{}'. Language must contain only alphanumeric characters, spaces, hyphens, plus signs, hash, or dots.",
@@ -205,12 +168,18 @@ pub async fn search_repositories(
         }
     }
 
+    if !client.has_token() {
+        return Err(GitHubError::AuthenticationError(
+            "Repository search requires a GitHub token".into(),
+        ));
+    }
     let query_string = query_parts.join(" ");
     tracing::debug!("GitHub search query: {}", query_string);
 
     let mut all_repositories = Vec::new();
     let mut after_cursor: Option<String> = None;
     let max_total = limit.min(1000);
+    let mut seen_cursors = HashSet::new();
 
     loop {
         let mut variables = HashMap::new();
@@ -220,7 +189,9 @@ pub async fn search_repositories(
         );
         variables.insert(
             "first".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(100)),
+            serde_json::Value::Number(serde_json::Number::from(
+                (max_total - all_repositories.len()).min(100),
+            )),
         );
 
         if let Some(cursor) = &after_cursor {
@@ -238,68 +209,36 @@ pub async fn search_repositories(
         };
 
         let response = client
-            .client()
-            .post(GITHUB_GRAPHQL_URL)
+            .post(client.graphql_url())
             .json(&graphql_query)
             .send()
             .await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return match status.as_u16() {
-                401 => Err(GitHubError::AuthenticationError(
-                    "Invalid or missing GitHub token".to_string(),
-                )),
-                403 => Err(GitHubError::RateLimitError(
-                    "GraphQL API rate limit exceeded".to_string(),
-                )),
-                451 => Err(GitHubError::DmcaBlockedError(
-                    "Search blocked for legal reasons".to_string(),
-                )),
-                _ => Err(GitHubError::ApiError {
-                    status: status.as_u16(),
-                    message: error_text,
-                }),
-            };
-        }
-
-        let graphql_response: GraphQLResponse<SearchResult> = response.json().await?;
-
-        if let Some(errors) = graphql_response.errors {
-            let error_message = errors
-                .into_iter()
-                .map(|e| e.message)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(GitHubError::ApiError {
-                status: 200,
-                message: error_message,
-            });
-        }
-
-        match graphql_response.data {
-            Some(data) => {
-                let page_repositories: Vec<SearchRepository> = data
-                    .search
-                    .edges
-                    .into_iter()
-                    .map(|edge| edge.node)
-                    .collect();
-
-                all_repositories.extend(page_repositories);
-
-                if data.search.page_info.has_next_page && all_repositories.len() < max_total {
-                    after_cursor = data.search.page_info.end_cursor;
-                } else {
-                    break;
-                }
-            }
-            None => {
-                return Err(GitHubError::ParseError(
-                    "No data in GraphQL response".to_string(),
+        let data: SearchResult = super::response::graphql(response).await?;
+        let page_is_empty = data.search.edges.is_empty();
+        let page_repositories = data
+            .search
+            .edges
+            .into_iter()
+            .map(|edge| SearchRepository::from(edge.node));
+        all_repositories.extend(page_repositories);
+        if data.search.page_info.has_next_page && all_repositories.len() < max_total {
+            let cursor = data
+                .search
+                .page_info
+                .end_cursor
+                .filter(|cursor| !cursor.is_empty())
+                .ok_or_else(|| {
+                    GitHubError::PaginationError("hasNextPage without endCursor".into())
+                })?;
+            if page_is_empty || !seen_cursors.insert(cursor.clone()) {
+                return Err(GitHubError::PaginationError(
+                    "Search pagination made no progress".into(),
                 ));
             }
+            after_cursor = Some(cursor);
+        } else {
+            break;
         }
     }
 

@@ -1,17 +1,23 @@
 use crate::github::client::GitHubClient;
 use crate::github::types::*;
 use crate::{config::*, error::*};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
+
+pub use crate::github::models::Repository;
 
 /// Full repository information from GitHub API.
 ///
 /// Contains comprehensive details about a repository including metadata,
 /// statistics, and related information.
-#[derive(Deserialize, Serialize)]
-pub struct Repository {
-    /// GitHub's internal ID for the repository
-    pub id: String,
+#[derive(Deserialize)]
+struct GraphQLRepository {
+    /// Opaque global node ID, shared by the REST and GraphQL APIs.
+    #[serde(rename = "id")]
+    pub node_id: String,
+    /// Numeric database ID, when supplied by GitHub.
+    #[serde(rename = "databaseId")]
+    pub database_id: Option<u64>,
     /// Repository name (without owner)
     pub name: String,
     /// Full repository name in "owner/repo" format
@@ -61,7 +67,7 @@ pub struct Repository {
     #[serde(rename = "primaryLanguage")]
     pub primary_language: Option<Language>,
     /// All languages used in the repository
-    pub languages: LanguageConnection,
+    pub languages: GraphQLLanguages,
     /// License information
     #[serde(rename = "licenseInfo")]
     pub license_info: Option<License>,
@@ -73,98 +79,68 @@ pub struct Repository {
     pub repository_topics: TopicConnection,
 }
 
-impl Repository {
-    /// Returns the primary language name, or None if not set.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use github_rust::GitHubService;
-    /// # async fn example() -> github_rust::Result<()> {
-    /// let service = GitHubService::new()?;
-    /// let repo = service.get_repository_info("rust-lang", "rust").await?;
-    ///
-    /// if let Some(lang) = repo.language() {
-    ///     println!("Primary language: {}", lang);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[must_use]
-    pub fn language(&self) -> Option<&str> {
-        self.primary_language.as_ref().map(|l| l.name.as_str())
-    }
+#[derive(Deserialize)]
+struct GraphQLLanguages {
+    edges: Vec<LanguageEdge>,
+    #[serde(rename = "pageInfo")]
+    page_info: LanguagePageInfo,
+}
 
-    /// Returns the license name, or None if not set.
-    #[must_use]
-    pub fn license(&self) -> Option<&str> {
-        self.license_info.as_ref().map(|l| l.name.as_str())
-    }
+#[derive(Deserialize)]
+struct LanguagePageInfo {
+    #[serde(rename = "hasNextPage")]
+    has_next_page: bool,
+}
 
-    /// Returns the SPDX license identifier, or None if not available.
-    #[must_use]
-    pub fn license_spdx(&self) -> Option<&str> {
-        self.license_info
-            .as_ref()
-            .and_then(|l| l.spdx_id.as_deref())
-    }
-
-    /// Returns the default branch name, or None if not set.
-    #[must_use]
-    pub fn default_branch(&self) -> Option<&str> {
-        self.default_branch_ref.as_ref().map(|b| b.name.as_str())
-    }
-
-    /// Returns a list of topic names.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use github_rust::GitHubService;
-    /// # async fn example() -> github_rust::Result<()> {
-    /// let service = GitHubService::new()?;
-    /// let repo = service.get_repository_info("rust-lang", "rust").await?;
-    ///
-    /// for topic in repo.topics() {
-    ///     println!("Topic: {}", topic);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[must_use]
-    pub fn topics(&self) -> Vec<&str> {
-        self.repository_topics
-            .edges
-            .iter()
-            .map(|e| e.node.topic.name.as_str())
-            .collect()
-    }
-
-    /// Returns the owner part of name_with_owner.
-    #[must_use]
-    pub fn owner(&self) -> &str {
-        self.name_with_owner
-            .split('/')
-            .next()
-            .unwrap_or(&self.name_with_owner)
-    }
-
-    /// Returns the number of open issues.
-    #[must_use]
-    pub fn open_issues(&self) -> u32 {
-        self.issues.total_count
-    }
-
-    /// Returns the number of watchers.
-    #[must_use]
-    pub fn watcher_count(&self) -> u32 {
-        self.watchers.total_count
+impl From<GraphQLRepository> for Repository {
+    fn from(repo: GraphQLRepository) -> Self {
+        Self {
+            node_id: repo.node_id,
+            database_id: repo.database_id,
+            name: repo.name,
+            name_with_owner: repo.name_with_owner,
+            description: repo.description,
+            url: repo.url,
+            homepage_url: repo.homepage_url,
+            created_at: repo.created_at,
+            updated_at: repo.updated_at,
+            pushed_at: repo.pushed_at,
+            is_private: repo.is_private,
+            is_fork: repo.is_fork,
+            is_archived: repo.is_archived,
+            stargazer_count: repo.stargazer_count,
+            fork_count: repo.fork_count,
+            watcher_count: Some(repo.watchers.total_count),
+            open_issue_count: Some(repo.issues.total_count),
+            pull_request_count: Some(repo.pull_requests.total_count),
+            release_count: Some(repo.releases.total_count),
+            primary_language: repo.primary_language,
+            languages: Some(
+                repo.languages
+                    .edges
+                    .into_iter()
+                    .map(|edge| crate::github::models::LanguageUsage {
+                        language: edge.node,
+                        bytes: edge.size,
+                    })
+                    .collect(),
+            ),
+            languages_complete: !repo.languages.page_info.has_next_page,
+            license_info: repo.license_info,
+            default_branch: repo.default_branch_ref.map(|branch| branch.name),
+            topics: repo
+                .repository_topics
+                .edges
+                .into_iter()
+                .map(|edge| edge.node.topic.name)
+                .collect(),
+        }
     }
 }
 
 #[derive(Deserialize)]
 struct RepositoryResponse {
-    repository: Option<Repository>,
+    repository: Option<GraphQLRepository>,
 }
 
 pub async fn get_repository_info(
@@ -182,74 +158,15 @@ pub async fn get_repository_info(
     };
 
     let response = client
-        .client()
-        .post(GITHUB_GRAPHQL_URL)
+        .post(client.graphql_url())
         .json(&query)
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        return match status.as_u16() {
-            401 => Err(GitHubError::AuthenticationError(
-                "Invalid or missing GitHub token".to_string(),
-            )),
-            403 => {
-                // Parse HTTP 403 more intelligently
-                let error_lower = error_text.to_lowercase();
-                if error_lower.contains("rate limit")
-                    || error_lower.contains("api rate limit exceeded")
-                {
-                    Err(GitHubError::RateLimitError(
-                        "GraphQL API rate limit exceeded".to_string(),
-                    ))
-                } else if error_lower.contains("repository access blocked")
-                    || error_lower.contains("access blocked")
-                    || error_lower.contains("blocked")
-                {
-                    Err(GitHubError::AccessBlockedError(format!(
-                        "{}/{}",
-                        owner, name
-                    )))
-                } else {
-                    // Generic access denied (permissions, private repo, etc.)
-                    Err(GitHubError::AuthenticationError(format!(
-                        "Access denied to {}/{}: {}",
-                        owner, name, error_text
-                    )))
-                }
-            }
-            404 => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-            451 => Err(GitHubError::DmcaBlockedError(format!("{}/{}", owner, name))),
-            _ => Err(GitHubError::ApiError {
-                status: status.as_u16(),
-                message: error_text,
-            }),
-        };
-    }
-
-    let graphql_response: GraphQLResponse<RepositoryResponse> = response.json().await?;
-
-    if let Some(errors) = graphql_response.errors {
-        let error_message = errors
-            .into_iter()
-            .map(|e| e.message)
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(GitHubError::ApiError {
-            status: 200,
-            message: error_message,
-        });
-    }
-
-    match graphql_response.data {
-        Some(data) => match data.repository {
-            Some(repo) => Ok(repo),
-            None => Err(GitHubError::NotFoundError(format!("{}/{}", owner, name))),
-        },
-        None => Err(GitHubError::ParseError(
-            "No data in GraphQL response".to_string(),
-        )),
-    }
+    let data: RepositoryResponse = super::response::graphql(response)
+        .await
+        .map_err(|error| error.with_repository_context(owner, name))?;
+    data.repository
+        .map(Into::into)
+        .ok_or_else(|| GitHubError::NotFoundError(format!("{owner}/{name}")))
 }

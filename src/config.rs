@@ -4,12 +4,12 @@ pub const GITHUB_API_URL: &str = "https://api.github.com";
 pub const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
 pub const USER_AGENT: &str = "github-rust/0.1.0";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-pub const MAX_RETRIES: u32 = 3;
 
 pub const GRAPHQL_REPOSITORY_QUERY: &str = r#"
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     id
+    databaseId
     name
     nameWithOwner
     description
@@ -26,7 +26,7 @@ query($owner: String!, $name: String!) {
     watchers {
       totalCount
     }
-    issues {
+    issues(states: OPEN) {
       totalCount
     }
     pullRequests {
@@ -39,7 +39,8 @@ query($owner: String!, $name: String!) {
       name
       color
     }
-    languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+    languages(first: 100, orderBy: {field: SIZE, direction: DESC}) {
+      pageInfo { hasNextPage }
       edges {
         size
         node {
@@ -55,7 +56,7 @@ query($owner: String!, $name: String!) {
     defaultBranchRef {
       name
     }
-    repositoryTopics(first: 20) {
+    repositoryTopics(first: 100) {
       edges {
         node {
           topic {
@@ -80,6 +81,7 @@ query($queryString: String!, $first: Int!, $after: String) {
       node {
         ... on Repository {
           id
+          databaseId
           name
           nameWithOwner
           description
@@ -97,7 +99,7 @@ query($queryString: String!, $first: Int!, $after: String) {
             name
             spdxId
           }
-          repositoryTopics(first: 5) {
+          repositoryTopics(first: 100) {
             edges {
               node {
                 topic {

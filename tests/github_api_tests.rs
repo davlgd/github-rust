@@ -1,52 +1,32 @@
+#[path = "cases/errors.rs"]
+mod errors;
+#[path = "cases/fallback.rs"]
+mod fallback;
+#[path = "cases/repository.rs"]
+mod repository;
+#[path = "cases/search.rs"]
+mod search;
+mod support;
+
 use github_rust::{GitHubService, SearchRepository, StargazerWithDate, User};
 
-#[tokio::test]
-async fn test_github_service_creation_without_token() {
-    // Test that GitHubService can be created without a token
-    unsafe {
-        std::env::remove_var("GITHUB_TOKEN");
-    }
-
-    let service = GitHubService::new();
-    assert!(service.is_ok());
-
-    let service = service.unwrap();
-    assert!(!service.has_token());
-}
-
 #[test]
-fn test_github_service_token_detection() {
-    // This test runs in its own process and tests token detection
-    // We'll test the behavior with a fresh environment per test
-
-    // Save current token state
-    let original_token = std::env::var("GITHUB_TOKEN").ok();
-
-    // Test with token set
-    unsafe {
-        std::env::set_var("GITHUB_TOKEN", "test_token_value");
-    }
-
-    let service_with_token = GitHubService::new();
-    assert!(service_with_token.is_ok());
-    let service_with_token = service_with_token.unwrap();
-    assert!(service_with_token.has_token());
-
-    // Test without token
-    unsafe {
-        std::env::remove_var("GITHUB_TOKEN");
-    }
-
-    let service_without_token = GitHubService::new();
-    assert!(service_without_token.is_ok());
-    let service_without_token = service_without_token.unwrap();
-    assert!(!service_without_token.has_token());
-
-    // Restore original token state
-    match original_token {
-        Some(token) => unsafe { std::env::set_var("GITHUB_TOKEN", token) },
-        None => unsafe { std::env::remove_var("GITHUB_TOKEN") },
-    }
+fn test_explicit_client_authentication() {
+    use github_rust::GitHubClient;
+    let anonymous = GitHubClient::builder().build().unwrap();
+    assert!(!anonymous.has_token());
+    let authenticated = GitHubClient::builder()
+        .token("test_token_value".into())
+        .build()
+        .unwrap();
+    assert!(authenticated.has_token());
+    assert!(GitHubClient::builder().token("".into()).build().is_err());
+    assert!(
+        GitHubClient::builder()
+            .token("invalid\ntoken".into())
+            .build()
+            .is_err()
+    );
 }
 
 #[test]
@@ -78,41 +58,23 @@ fn test_repository_parsing() {
 fn test_search_repository_default() {
     // Test that SearchRepository can be created with Default
     let repo = SearchRepository::default();
-    assert_eq!(repo.id, "");
+    assert_eq!(repo.node_id, "");
+    assert_eq!(repo.database_id, None);
     assert_eq!(repo.name, "");
     assert_eq!(repo.stargazer_count, 0);
     assert_eq!(repo.fork_count, 0);
 }
 
-#[test]
-fn test_github_error_types() {
-    use github_rust::GitHubError;
-
-    // Test different error types can be created
-    let network_error = GitHubError::NetworkError("Connection failed".to_string());
-    let parse_error = GitHubError::ParseError("Invalid JSON".to_string());
-    let api_error = GitHubError::ApiError {
-        status: 404,
-        message: "Repository not found".to_string(),
-    };
-
-    // Errors should display meaningful messages
-    assert!(format!("{}", network_error).contains("Connection failed"));
-    assert!(format!("{}", parse_error).contains("Invalid JSON"));
-    assert!(format!("{}", api_error).contains("Repository not found"));
-}
-
 #[tokio::test]
 #[ignore] // Only run with internet connection
 async fn test_real_github_api_rate_limit() {
-    // This test requires internet connection and may fail without proper token
-    let service = GitHubService::new();
-    if let Ok(service) = service {
-        let rate_limit_result = service.check_rate_limit().await;
-        // We don't assert success as it depends on network availability
-        // but the function should not panic
-        drop(rate_limit_result);
-    }
+    let limits = GitHubService::new()
+        .expect("Client construction failed")
+        .check_rate_limit()
+        .await
+        .expect("Live rate limit request failed");
+    assert!(limits.limit > 0);
+    assert!(limits.remaining <= limits.limit);
 }
 
 #[test]
@@ -202,7 +164,7 @@ fn test_stargazer_types_serialization() {
 #[tokio::test]
 async fn test_stargazers_api_with_mock() {
     use github_rust::github::client::GitHubClient;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // Start a mock server
@@ -261,17 +223,30 @@ async fn test_stargazers_api_with_mock() {
     Mock::given(method("GET"))
         .and(path("/repos/microsoft/vscode/stargazers"))
         .and(header("Accept", "application/vnd.github.v3.star+json"))
+        .and(header("Authorization", "Bearer test_token"))
+        .and(header("X-GitHub-Api-Version", "2022-11-28"))
+        .and(query_param("per_page", "2"))
+        .and(query_param("page", "1"))
         .respond_with(ResponseTemplate::new(200).set_body_string(stargazers_response))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    // Create a client with the mock server URL
-    let _base_url = mock_server.uri();
-
-    // We need to create a custom client for testing
-    // For this test, we'll use the fact that the client construction is testable
-    let client_result = GitHubClient::new();
-    assert!(client_result.is_ok());
+    let client = GitHubClient::builder()
+        .rest_url(mock_server.uri())
+        .graphql_url(format!("{}/graphql", mock_server.uri()))
+        .token("test_token".into())
+        .http_client(reqwest::Client::new())
+        .build()
+        .unwrap();
+    let service = GitHubService::with_client(client);
+    let stargazers = service
+        .get_repository_stargazers("microsoft", "vscode", Some(2), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(stargazers.len(), 2);
+    assert_eq!(stargazers[0].user.login, "testuser1");
+    assert_eq!(stargazers[0].starred_at, "2015-09-11T10:42:05Z");
 }
 
 #[tokio::test]
@@ -287,6 +262,7 @@ async fn test_stargazers_api_error_handling() {
     Mock::given(method("GET"))
         .and(path("/repos/nonexistent/repo/stargazers"))
         .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
@@ -294,6 +270,7 @@ async fn test_stargazers_api_error_handling() {
     Mock::given(method("GET"))
         .and(path("/repos/ratelimited/repo/stargazers"))
         .respond_with(ResponseTemplate::new(403).set_body_string("API rate limit exceeded"))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
@@ -301,32 +278,32 @@ async fn test_stargazers_api_error_handling() {
     Mock::given(method("GET"))
         .and(path("/repos/private/repo/stargazers"))
         .respond_with(ResponseTemplate::new(401).set_body_string("Bad credentials"))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    // These tests verify that error handling works without needing real API calls
-    let client_result = GitHubClient::new();
-    assert!(client_result.is_ok());
-}
-
-#[test]
-fn test_stargazers_pagination_parameters() {
-    // Test that pagination parameters are handled correctly
-    fn apply_pagination(per_page: Option<u32>, page: Option<u32>) -> (u32, u32) {
-        (per_page.unwrap_or(30).min(100), page.unwrap_or(1))
-    }
-
-    // Test default values
-    let (per_page, page) = apply_pagination(None, None);
-    assert_eq!(per_page, 30);
-    assert_eq!(page, 1);
-
-    // Test custom values
-    let (per_page, page) = apply_pagination(Some(50), Some(2));
-    assert_eq!(per_page, 50);
-    assert_eq!(page, 2);
-
-    // Test max limit enforcement
-    let (per_page, _) = apply_pagination(Some(150), Some(1));
-    assert_eq!(per_page, 100);
+    let client = GitHubClient::builder()
+        .rest_url(mock_server.uri())
+        .build()
+        .unwrap();
+    let service = GitHubService::with_client(client);
+    use github_rust::GitHubError;
+    assert!(matches!(
+        service
+            .get_repository_stargazers("nonexistent", "repo", None, None)
+            .await,
+        Err(GitHubError::NotFoundError(_))
+    ));
+    assert!(matches!(
+        service
+            .get_repository_stargazers("ratelimited", "repo", None, None)
+            .await,
+        Err(GitHubError::RateLimitError(_))
+    ));
+    assert!(matches!(
+        service
+            .get_repository_stargazers("private", "repo", None, None)
+            .await,
+        Err(GitHubError::AuthenticationError(_))
+    ));
 }

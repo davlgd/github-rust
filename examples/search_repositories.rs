@@ -32,8 +32,9 @@ async fn main() -> Result<()> {
 
         if let Some(desc) = &repo.description {
             // Truncate long descriptions (UTF-8 safe)
+            let is_truncated = desc.chars().count() > 77;
             let desc: String = desc.chars().take(77).collect();
-            if desc.len() < repo.description.as_ref().map_or(0, |d| d.chars().count()) {
+            if is_truncated {
                 println!("   {}...", desc);
             } else {
                 println!("   {}", desc);
