@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Require `reqwest` 0.13.5 and `serde_json` 1.0.154 or newer, refresh locked dependencies and update `actions/checkout` to v7.0.1 in CI.
+
 ## v0.2.3
 
 - Treat empty or whitespace-only `GITHUB_TOKEN` values as anonymous access; explicitly supplied empty builder tokens remain invalid.
